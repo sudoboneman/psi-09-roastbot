@@ -185,13 +185,23 @@ def psi09():
         sender_name = None
         group_name = "DefaultGroup"
 
-        # 1. Handle WhatsAuto (form-data)
-        if request.form:
-            user_message = request.form.get("message")
-            sender_name = request.form.get("sender") or request.form.get("author")
-            group_name = request.form.get("group") or "DefaultGroup"
+        # 1. Handle WhatsAuto (form-data or broken JSON pretending to be application/json)
+        json_data = request.get_json(silent=True)
+        if request.form or request.headers.get("Content-Type") == "application/json":
+            user_message = request.form.get("message") or (json_data or {}).get("message")
+            sender_name = (
+                request.form.get("sender")
+                or (json_data or {}).get("sender")
+                or request.form.get("author")
+                or (json_data or {}).get("author")
+            )
+            group_name = (
+                request.form.get("group")
+                or (json_data or {}).get("group")
+                or "DefaultGroup"
+            )
 
-        # 2. Handle JSON (AutoResponder / cron)
+        # 2. Handle proper JSON (AutoResponder / cron)
         elif request.is_json:
             data = request.get_json()
             if not data:
@@ -201,7 +211,7 @@ def psi09():
             sender_name = data.get("sender") or data.get("query", {}).get("sender") or data.get("query", {}).get("author")
             group_name = data.get("group") or data.get("query", {}).get("group") or "DefaultGroup"
 
-        # 3. Handle GET-style cron ping fallback
+        # 3. Fallback for GET-style ping requests
         else:
             user_message = request.args.get("message")
             sender_name = request.args.get("sender") or "cron"
@@ -219,7 +229,6 @@ def psi09():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
