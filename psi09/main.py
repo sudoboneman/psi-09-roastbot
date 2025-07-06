@@ -181,26 +181,45 @@ def get_roast_response(user_message, group_name, sender_name):
 @app.route("/psi09", methods=["POST"])
 def psi09():
     try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "Missing JSON data"}), 400
+        user_message = None
+        sender_name = None
+        group_name = "DefaultGroup"
 
-        user_message = data.get("message")
-        group_name = data.get("group_name") or "DefaultGroup"
-        sender_name = data.get("sender") or "Unknown"
+        # 1. Handle WhatsAuto (form-data)
+        if request.form:
+            user_message = request.form.get("message")
+            sender_name = request.form.get("sender") or request.form.get("author")
+            group_name = request.form.get("group") or "DefaultGroup"
 
+        # 2. Handle JSON (AutoResponder / cron)
+        elif request.is_json:
+            data = request.get_json()
+            if not data:
+                return jsonify({"error": "Missing JSON data"}), 400
 
+            user_message = data.get("message") or data.get("query", {}).get("message")
+            sender_name = data.get("sender") or data.get("query", {}).get("sender") or data.get("query", {}).get("author")
+            group_name = data.get("group") or data.get("query", {}).get("group") or "DefaultGroup"
+
+        # 3. Handle GET-style cron ping fallback
+        else:
+            user_message = request.args.get("message")
+            sender_name = request.args.get("sender") or "cron"
+            group_name = request.args.get("group") or "System"
+
+        # Ping check
         if user_message == "ping":
             return jsonify({"reply": "pong"}), 200
 
         if not user_message or not sender_name:
-            return jsonify({"error": "Missing 'message' or 'sender' in query"}), 400
+            return jsonify({"error": "Missing 'message' or 'sender'"}), 400
 
         response = get_roast_response(user_message, group_name, sender_name)
-
         return jsonify({"reply": response})
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
