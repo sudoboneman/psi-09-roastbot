@@ -178,37 +178,18 @@ def get_roast_response(user_message, group_name, sender_name):
 
     return reply
 
-@app.route("/psi09", methods=["POST", "GET"])
+@app.route("/psi09", methods=["POST"])
 def psi09():
     try:
-        print("\n====== NEW REQUEST ======")
-        print("Headers:", dict(request.headers))
-        print("Raw data:", request.data)
-        print("Form:", request.form)
-        print("JSON:", request.get_json(silent=True))
+        data = request.get_json()
 
-        user_message = None
-        sender_name = None
-        group_name = "DefaultGroup"
+        if not data:
+            return jsonify({"error": "Missing JSON data"}), 400
 
-        # 1. Handle GET for cron-style ping
-        if request.method == "GET":
-            user_message = request.args.get("message")
-            sender_name = request.args.get("sender") or "cron"
-            group_name = request.args.get("group") or "System"
-
-        # 2. Handle WhatsAuto / JSON
-        elif request.is_json:
-            data = request.get_json(silent=True) or {}
-            user_message = data.get("message")
-            sender_name = data.get("sender")
-            group_name = data.get("group_name") or "DefaultGroup"
-
-        # 3. Fallback for form-encoded data
-        elif request.form:
-            user_message = request.form.get("message")
-            sender_name = request.form.get("sender")
-            group_name = request.form.get("group_name") or "DefaultGroup"
+        # WhatsAuto format
+        user_message = data.get("message")
+        sender_name = data.get("sender")
+        group_name = data.get("group_name", data.get("app", "DefaultGroup"))
 
         # Ping check
         if user_message == "ping":
@@ -218,12 +199,11 @@ def psi09():
             return jsonify({"error": "Missing 'message' or 'sender'"}), 400
 
         response = get_roast_response(user_message, group_name, sender_name)
-        return jsonify({"reply": response})
+        return jsonify({"reply": response}), 200
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
