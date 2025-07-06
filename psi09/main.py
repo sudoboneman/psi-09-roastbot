@@ -19,7 +19,7 @@ MODEL = "gpt-4o-mini"
 HISTORY_FILE = "chat_history.json"
 MEMORY_FILE = "user_memory.json"
 SETTINGS_FILE = "user_settings.json"
-MAX_HISTORY_TOKENS = 500
+MAX_HISTORY_TOKENS = 600
 ENCODING = tiktoken.encoding_for_model(MODEL)
 
 if os.path.exists(HISTORY_FILE):
@@ -95,7 +95,7 @@ def summarize_user_history(user_key):
 
     summary_prompt = [
         {"role": "system", "content": (
-            """You are PSI-09. Summarize the user's behavior in 2–3 lines. Be cold, blunt, and vicious. No mercy, no politeness. Assume they're a walking disaster. This fuels future roasts — make it sting."""
+            """You are PSI-09. Summarize the user's behavior in 1-2 lines. Be cold, blunt, and vicious. No mercy, no politeness. Assume they're a walking disaster. This fuels future roasts — make it sting."""
         )}
     ] + full_history[-20:]
 
@@ -104,7 +104,7 @@ def summarize_user_history(user_key):
             model=MODEL,
             messages=summary_prompt,
             max_tokens=50,
-            temperature=0.6
+            temperature=0.7
         )
         summary = response.choices[0].message.content.strip()
         user_memory[user_key] = summary
