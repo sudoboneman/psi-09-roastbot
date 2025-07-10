@@ -182,16 +182,16 @@ def get_roast_response(user_message, group_name, sender_name):
 def psi09():
     try:
         data = request.get_json()
-
         if not data:
             return jsonify({"error": "Missing JSON data"}), 400
 
-        # WhatsAuto format
-        user_message = data.get("message")
-        sender_name = data.get("sender")
-        group_name = data.get("group_name", data.get("app", "DefaultGroup"))
+        # Support cron-job.org's wrapper
+        payload = data.get("query", data)
 
-        # Ping check
+        user_message = payload.get("message")
+        sender_name = payload.get("sender")
+        group_name = payload.get("group_name", payload.get("app", "DefaultGroup"))
+
         if user_message == "ping":
             return jsonify({"reply": "pong"}), 200
 
@@ -203,7 +203,6 @@ def psi09():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
