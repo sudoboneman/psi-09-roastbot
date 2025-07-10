@@ -179,13 +179,18 @@ def get_roast_response(user_message, group_name, sender_name):
     return reply
 
 @app.route("/psi09", methods=["POST"])
+@app.route("/psi09", methods=["POST"])
 def psi09():
     try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "Missing JSON data"}), 400
+        if request.is_json:
+            data = request.get_json()
+        else:
+            # Try reading form data (WhatsAuto sends this way)
+            data = request.form.to_dict()
 
-        # Support cron-job.org's wrapper
+        if not data:
+            return jsonify({"error": "Missing data"}), 400
+
         payload = data.get("query", data)
 
         user_message = payload.get("message")
