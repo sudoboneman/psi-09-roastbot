@@ -179,23 +179,24 @@ def get_roast_response(user_message, group_name, sender_name):
     return reply
 
 @app.route("/psi09", methods=["POST"])
-@app.route("/psi09", methods=["POST"])
 def psi09():
     try:
+        # Detect proper JSON
         if request.is_json:
             data = request.get_json()
         else:
-            # Try reading form data (WhatsAuto sends this way)
-            data = request.form.to_dict()
+            # Fall back to form-style data like WhatsAuto sends
+            raw_data = request.get_data(as_text=True)
 
-        if not data:
-            return jsonify({"error": "Missing data"}), 400
+            # Convert fake-JSON to real dict
+            try:
+                data = dict(item.split("=") for item in raw_data.strip("{}").split(", "))
+            except Exception:
+                return jsonify({"error": "Malformed request body"}), 400
 
-        payload = data.get("query", data)
-
-        user_message = payload.get("message")
-        sender_name = payload.get("sender")
-        group_name = payload.get("group_name", payload.get("app", "DefaultGroup"))
+        user_message = data.get("message")
+        sender_name = data.get("sender")
+        group_name = data.get("group_name", data.get("app", "DefaultGroup"))
 
         if user_message == "ping":
             return jsonify({"reply": "pong"}), 200
