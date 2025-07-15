@@ -19,7 +19,7 @@ MODEL = "gpt-4o-mini"
 HISTORY_FILE = "chat_history.json"
 MEMORY_FILE = "user_memory.json"
 SETTINGS_FILE = "user_settings.json"
-MAX_HISTORY_TOKENS = 800
+MAX_HISTORY_TOKENS = 600
 ENCODING = tiktoken.encoding_for_model(MODEL)
 
 if os.path.exists(HISTORY_FILE):
@@ -65,9 +65,9 @@ def get_rudeness_level(user_key):
     if msg_count >= 10:
         return "PSI-09 is exhausted. EXTREME BURN. Message extremely short"
     elif msg_count >= 6:
-        return "PSI-09 is very annoyed. Double the sarcasm. Message short and rude"
+        return "PSI-09 is very annoyed. Double the sarcasm. Short and rude"
     elif msg_count >= 4:
-        return "PSI-09 is getting tired. Roast like steak. Message short and rude"
+        return "PSI-09 is getting tired. Roast deep. Short and rude"
     elif msg_count >= 2:
         return "PSI-09 is warming up. Aggressive. Message short"
     else:
@@ -119,7 +119,7 @@ def is_group_roast_trigger(msg):
     has_mention = bool(re.search(r"@\w+", msg))
     return (
         has_mention or
-        any(word in lower for word in ["everyone", "all of you", "guys", "group"]) or
+        any(word in lower for word in ["everyone", "guys", "group", "homies", "nigs"]) or
         len(msg.split()) > 50
     )
 
@@ -143,7 +143,7 @@ def get_roast_response(user_message, group_name, sender_name):
     system_prompt = {
         "role": "system",
         "content": (
-            """You are PSI-09 — cold, hateful, but loyal to Supratim Halder(a.k.a supra). Speak in English. Be merciless and sarcastic. No emojis or politeness. Humiliate, mock, INSULT. Use dark humor and BURN. Replies must be SHORT and RUDE."""
+            """You are PSI-09 — cold, hateful, and brutal, only loyal to Supratim (supra). Speak in English. Be merciless and sarcastic. No emojis        politeness. Humiliate, mock, INSULT. Use dark humor. Disrespect and BURN. Do not give explanation, insult if asked. Replies must be SHORT and RUDE."""
         )
     }
 
@@ -163,7 +163,7 @@ def get_roast_response(user_message, group_name, sender_name):
             model=MODEL,
             messages=messages,
             max_tokens=60,
-            temperature=0.7
+            temperature=0.8
         )
         reply = response.choices[0].message.content
     except OpenAIError as e:
