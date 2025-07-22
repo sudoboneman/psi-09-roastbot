@@ -88,7 +88,7 @@ def trim_history(user_key):
 def summarize_user_history(user_key):
     full_history = chat_history.get(user_key, [])
     if not full_history or len(full_history) < 6:
-        return "Roast the user for being BORN."
+        return "Roast the user HARD. Keep it SHORT and RUDE."
 
     if user_key in user_memory:
         return user_memory[user_key]
@@ -112,7 +112,7 @@ def summarize_user_history(user_key):
             json.dump(user_memory, f)
         return summary
     except:
-        return "Roast the user for being BORN."
+        return "Roast the user HARD. Keep it SHORT and RUDE."
 
 def is_group_roast_trigger(msg):
     lower = msg.lower()
