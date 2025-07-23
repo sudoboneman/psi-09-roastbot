@@ -167,7 +167,7 @@ def get_roast_response(user_message, group_name, sender_name):
         )
         reply = response.choices[0].message.content
     except OpenAIError as e:
-        return f"OpenAI API error: {str(e)}"
+        return None
     except Exception as e:
         return f"Server error: {str(e)}"
 
@@ -205,6 +205,8 @@ def psi09():
             return jsonify({"error": "Missing 'message' or 'sender'"}), 400
 
         response = get_roast_response(user_message, group_name, sender_name)
+        if response is None:
+            return "", 204  # No content (silent fail)
         return jsonify({"reply": response}), 200
 
     except Exception as e:
