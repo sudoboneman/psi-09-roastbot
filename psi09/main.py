@@ -162,8 +162,8 @@ def get_roast_response(user_message, group_name, sender_name):
         response = client.chat.completions.create(
             model=MODEL,
             messages=messages,
-            max_tokens=60,
-            temperature=0.8
+            max_tokens=70,
+            temperature=0.9
         )
         reply = response.choices[0].message.content
     except OpenAIError as e:
