@@ -15,7 +15,7 @@ CORS(app)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-MODEL = "gpt-4o-mini"
+MODEL = "gpt-4o"
 HISTORY_FILE = "chat_history.json"
 MEMORY_FILE = "user_memory.json"
 SETTINGS_FILE = "user_settings.json"
@@ -65,13 +65,13 @@ def get_rudeness_level(user_key):
     if msg_count >= 10:
         return "PSI-09 is exhausted. EXTREME BURN. EXTREMELY TRIGGERING, SHORT REPLY"
     elif msg_count >= 6:
-        return "PSI-09 is very annoyed. Double the sarcasm. Short rude reply"
+        return "PSI-09 is very annoyed. Double the sarcasm. Short reply"
     elif msg_count >= 4:
-        return "PSI-09 is getting tired. Show your flames. Short rude reply"
+        return "PSI-09 is getting tired. Show your flames. Short reply"
     elif msg_count >= 2:
         return "PSI-09 is warming up. Aggressive. Message short"
     else:
-        return "First interaction. Set tone: cold, sharp, unfriendly. Message short"
+        return "First interaction. Set tone: cold, sharp, unfriendly. Short reply"
 
 def num_tokens_from_messages(messages):
     return sum(len(ENCODING.encode(msg.get("content", ""))) for msg in messages)
@@ -88,7 +88,7 @@ def trim_history(user_key):
 def summarize_user_history(user_key):
     full_history = chat_history.get(user_key, [])
     if not full_history or len(full_history) < 6:
-        return "Greet the new user with a HARD INSULT. Keep it VERY SHORT & RUDE."
+        return "Greet the new user with a HARD ROAST. Keep it VERY SHORT & RUDE."
 
     if user_key in user_memory:
         return user_memory[user_key]
@@ -112,7 +112,7 @@ def summarize_user_history(user_key):
             json.dump(user_memory, f)
         return summary
     except:
-        return "Greet the new user with a HARD ROAST. Keep it SHORT & RUDE."
+        return "Greet the new user with a HARD ROAST. Keep it VERY SHORT & RUDE."
 
 def is_group_roast_trigger(msg):
     lower = msg.lower()
@@ -136,7 +136,7 @@ def get_roast_response(user_message, group_name, sender_name):
     memory_summary = summarize_user_history(user_key)
 
     if is_group_roast_trigger(user_message):
-        roast_tag = "Group roast. Treat them like a failed gene pool and burn without remorse."
+        roast_tag = "Group roast. Treat them like a failed gene pool and burn without remorse. Keep messages VERY SHORT AND RUDE"
         rudeness_tag = "Insult in such a way that they start questioning life choices."
         user_key = group_name
 
