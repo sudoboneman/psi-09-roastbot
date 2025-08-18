@@ -19,7 +19,7 @@ MODEL = "gpt-4.1-mini"
 HISTORY_FILE = "chat_history.json"
 MEMORY_FILE = "user_memory.json"
 SETTINGS_FILE = "user_settings.json"
-MAX_HISTORY_TOKENS = 600
+MAX_HISTORY_TOKENS = 800
 ENCODING = tiktoken.encoding_for_model(MODEL)
 
 if os.path.exists(HISTORY_FILE):
