@@ -15,7 +15,7 @@ CORS(app)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-MODEL = "gpt-4.1"
+MODEL = "gpt-4.1-mini"
 HISTORY_FILE = "chat_history.json"
 MEMORY_FILE = "user_memory.json"
 SETTINGS_FILE = "user_settings.json"
