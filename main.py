@@ -1,12 +1,11 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-from openai import OpenAI, APIError
+from openai import OpenAI
 import os
 import json
 import tiktoken
 import random
-import re
 import threading
 
 load_dotenv()
@@ -19,7 +18,6 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MODEL = "gpt-4.1-mini"
 HISTORY_FILE = "chat_history.json"
 MEMORY_FILE = "user_memory.json"
-SETTINGS_FILE = "user_settings.json"
 MAX_HISTORY_TOKENS = 500
 
 try:
@@ -38,7 +36,6 @@ def load_json_file(path, default):
 
 chat_history = {k: v for k, v in load_json_file(HISTORY_FILE, {}).items() if len(v) > 0}
 user_memory = load_json_file(MEMORY_FILE, {})
-user_settings = load_json_file(SETTINGS_FILE, {})
 
 def save_json_file(path, data):
     def _save():
@@ -47,14 +44,6 @@ def save_json_file(path, data):
             json.dump(data, f)
         os.replace(tmp_path, path)
     threading.Thread(target=_save).start()
-
-def get_user_settings(user_key):
-    default_settings = {
-        "roast_intensity": "medium",
-        "include_behavioral_memory": True,
-        "flame_mode": False,
-    }
-    return user_settings.get(user_key, default_settings)
 
 def get_rudeness_level(user_key):
     """Escalates rudeness based on chat length."""
@@ -142,7 +131,6 @@ def summarize_user_history(user_key, group_name="DefaultGroup"):
             temperature=0.9
         )
         summary = response.choices[0].message.content.strip()
-        user_memory[user_key] = summary
 
         old_mem = user_memory.get(user_key, "")
         if summary != old_mem:
@@ -173,41 +161,39 @@ def is_group_roast_trigger(msg):
 
 def get_roast_response(user_message, group_name, sender_name):
     user_key = f"{group_name}:{sender_name}"
-    settings = get_user_settings(user_key)
-
     chat = chat_history.get(user_key, [])
     history_len = len(chat)
 
-    # Flame Mode / Roast probability
-    base_prob = 0.5 if settings.get("flame_mode") else 0.2
+    # Flame Mode probability
+    base_prob = 0.3
     length_factor = min(history_len * 0.05, 0.3)
     behavior_trigger = 0.2 if len(user_message.split()) > 50 else 0
     repetition_trigger = 0.15 if len(set(user_message.split())) < len(user_message.split()) * 0.6 else 0
     random_spike = 0.05 if random.random() < 0.15 else 0
     flame_chance = min(base_prob + length_factor + behavior_trigger + repetition_trigger + random_spike, 0.97)
     flame_triggered = random.random() < flame_chance
-    if flame_triggered:
-        user_message += " (Flame Mode Triggered)"
+
+    flame_note = " (Flame Mode Triggered)" if flame_triggered else ""
 
     rudeness_tag = get_rudeness_level(user_key)
     memory_summary = summarize_user_history(user_key, group_name)
 
     # Group roast detection
-    group_roast = False
-    if group_name != "DefaultGroup" and is_group_roast_trigger(user_message):
-        group_roast = True
+    group_roast = group_name != "DefaultGroup" and is_group_roast_trigger(user_message)
+    if group_roast:
         rudeness_tag = "Group roast mode. Humiliate everyone briefly, no mercy."
-        user_key = group_name  # shared memory for group
+        user_key = group_name
+        memory_summary = summarize_user_history(group_name, group_name)
 
         group_users = [k for k in chat_history.keys() if k.startswith(f"{group_name}:")]
         if group_users:
             extra_targets = random.sample(group_users, min(3, len(group_users)))
             if sender_name in extra_targets:
-                user_message += " (Targeted Extra Burn)"
+                flame_note += " (Targeted Extra Burn)"
 
     # Append user message
-    chat.append({"role": "user", "content": f"[{rudeness_tag}]\nMessage: {user_message}"})
     trimmed_chat = trim_history(user_key)
+    trimmed_chat.append({"role": "user", "content": f"[{rudeness_tag}{flame_note}]\nMessage: {user_message}"})
 
     # System prompt
     system_prompt = {
@@ -240,6 +226,7 @@ def get_roast_response(user_message, group_name, sender_name):
         reply = "..."  # fallback
 
     # Save assistant response
+    chat.append({"role": "user", "content": f"[{rudeness_tag}{flame_note}]\nMessage: {user_message}"})
     chat.append({"role": "assistant", "content": reply})
     chat_history[user_key] = chat
     save_json_file(HISTORY_FILE, chat_history)
