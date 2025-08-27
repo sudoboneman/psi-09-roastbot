@@ -62,6 +62,13 @@ def get_rudeness_level(user_key):
 def num_tokens_from_messages(messages):
     return sum(len(ENCODING.encode(msg.get("role", "") + msg.get("content", ""))) for msg in messages)
 
+def store_message_in_memory(sender_name, group_name, message):
+    """Store all messages in chat_history for memory purposes."""
+    user_key = f"{group_name}:{sender_name}"
+    chat = chat_history.get(user_key, [])
+    chat.append({"role": "user", "content": message})
+    chat_history[user_key] = chat
+    save_json_file(HISTORY_FILE, chat_history)
 
 def trim_history(user_key):
     """Trim history to fit token budget, summarizing oldest messages with brutal sarcasm."""
@@ -233,6 +240,7 @@ def get_roast_response(user_message, group_name, sender_name):
 
     return reply
 
+BOT_NUMBER = "@919477853548"  # your WhatsApp bot number
 @app.route("/psi09", methods=["POST"])
 def psi09():
     try:
@@ -242,15 +250,34 @@ def psi09():
         data = request.get_json()
         user_message = data.get("message")
         sender_name = data.get("sender")
-        group_name = data.get("group_name", "DefaultGroup")
+        group_name = data.get("group_name")  # None for personal chats
 
+        # Ping check
         if user_message == "ping":
             return jsonify({"reply": "pong"}), 200
 
         if not user_message or not sender_name:
             return jsonify({"error": "Missing 'message' or 'sender'"}), 400
 
-        response = get_roast_response(user_message, group_name, sender_name)
+        # --- Store all messages for memory ---
+        store_message_in_memory(sender_name, group_name or "DefaultGroup", user_message)
+
+        # --- Decide whether to reply ---
+        should_reply = False
+        if group_name:
+            # Only reply if bot is mentioned in the message
+            if BOT_NUMBER in user_message:
+                should_reply = True
+        else:
+            # Always reply in personal chats
+            should_reply = True
+
+        if not should_reply:
+            # No reply for group messages without mention
+            return jsonify({"reply": ""}), 200
+
+        # --- Generate roast reply ---
+        response = get_roast_response(user_message, group_name or "DefaultGroup", sender_name)
         return jsonify({"reply": response}), 200
 
     except Exception as e:
