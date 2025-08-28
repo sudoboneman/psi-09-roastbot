@@ -257,7 +257,9 @@ def psi09():
             return jsonify({"reply": "pong"}), 200
 
         if not user_message or not sender_name:
-            return jsonify({"error": "Missing 'message' or 'sender'"}), 400
+        # Gracefully ignore invalid/empty messages
+            return jsonify({"reply": ""}), 200
+
 
         # --- Store all messages for memory ---
         store_message_in_memory(sender_name, group_name or "DefaultGroup", user_message)
