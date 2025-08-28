@@ -270,6 +270,7 @@ def psi09():
             # Only reply if bot is mentioned in the message
             if BOT_NUMBER in user_message:
                 should_reply = True
+                user_message = user_message.replace(BOT_NUMBER, "").strip()
         else:
             # Always reply in personal chats
             should_reply = True
