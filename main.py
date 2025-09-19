@@ -232,7 +232,7 @@ def get_roast_response(user_message, group_name, sender_name):
         )
         reply = response.choices[0].message.content.strip()
     except Exception:
-        reply = "..."  # fallback
+        reply = ""  # fallback
 
     # Save assistant response
     chat.append({"role": "user", "content": f"[{rudeness_tag}{flame_note}]\nMessage: {user_message}"})
@@ -282,6 +282,8 @@ def psi09():
 
         # --- Generate roast reply ---
         response = get_roast_response(user_message, group_name or "DefaultGroup", sender_name)
+        if not response:
+            return jsonify({}), 200
         return jsonify({"reply": response}), 200
 
     except Exception as e:
