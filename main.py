@@ -19,6 +19,7 @@ MODEL = "gpt-4.1-mini"
 HISTORY_FILE = "chat_history.json"
 MEMORY_FILE = "user_memory.json"
 MAX_HISTORY_TOKENS = 500
+BOT_NUMBER = "@919477853548"
 
 try:
     ENCODING = tiktoken.encoding_for_model(MODEL)
@@ -193,6 +194,7 @@ def get_roast_response(user_message, group_name, sender_name):
         memory_summary = summarize_user_history(group_name, group_name)
 
         group_users = [k for k in chat_history.keys() if k.startswith(f"{group_name}:")]
+        group_users = [u for u in group_users if not u.endswith(BOT_NUMBER)]
         if group_users:
             extra_targets = random.sample(group_users, min(3, len(group_users)))
             if sender_name in extra_targets:
@@ -240,7 +242,6 @@ def get_roast_response(user_message, group_name, sender_name):
 
     return reply
 
-BOT_NUMBER = "@919477853548"  # your WhatsApp bot number
 @app.route("/psi09", methods=["POST"])
 def psi09():
     try:
