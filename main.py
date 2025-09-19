@@ -271,7 +271,9 @@ def psi09():
             # Only reply if bot is mentioned in the message
             if BOT_NUMBER in user_message:
                 should_reply = True
-                user_message = user_message.replace(BOT_NUMBER, "").strip()
+                cleaned = user_message.replace(BOT_NUMBER, "").strip()
+                user_message = cleaned if cleaned else "[bot_mention]"
+
         else:
             # Always reply in personal chats
             should_reply = True
@@ -283,7 +285,7 @@ def psi09():
         # --- Generate roast reply ---
         response = get_roast_response(user_message, group_name or "DefaultGroup", sender_name)
         if not response:
-            return jsonify({}), 200
+            return jsonify({"reply":""}), 200
         return jsonify({"reply": response}), 200
 
     except Exception as e:
