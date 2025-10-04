@@ -245,13 +245,21 @@ def get_roast_response(user_message, group_name, sender_name):
 
     return reply
 
+@app.route("/", methods=["GET"])
+def home_route():
+    return "✅ PSI-09 ROASTBOT is running."
+
+@app.route("/ping", methods=["GET"])
+def ping_route():
+    return "", 200
+
 @app.route("/psi09", methods=["POST"])
 def psi09():
     try:
         if not request.is_json:
             return jsonify({"error": "Only JSON requests are supported"}), 415
 
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         user_message = data.get("message")
         sender_name = data.get("sender")
         group_name = data.get("group_name")  # None for personal chats
@@ -263,7 +271,6 @@ def psi09():
         if not user_message or not sender_name:
         # Gracefully ignore invalid/empty messages
             return jsonify({"reply": ""}), 200
-
 
         # --- Store all messages for memory ---
         store_message_in_memory(sender_name, group_name or "DefaultGroup", user_message)
