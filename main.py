@@ -219,7 +219,6 @@ def get_roast_response(user_message, group_name, sender_name):
         )
     }
 
-
     messages = [system_prompt, {"role": "system", "content": f"User memory: {memory_summary}"}] + trimmed_chat
 
     # Generate response
@@ -247,7 +246,7 @@ def get_roast_response(user_message, group_name, sender_name):
 
 @app.route("/", methods=["GET"])
 def home_route():
-    return "✅ PSI-09 ROASTBOT is running."
+    return "✅ PSI-09-ROASTBOT is running."
 
 @app.route("/ping", methods=["GET"])
 def ping_route():
@@ -263,10 +262,6 @@ def psi09():
         user_message = data.get("message")
         sender_name = data.get("sender")
         group_name = data.get("group_name")  # None for personal chats
-
-        # Ping check
-        if user_message == "ping":
-            return jsonify({"reply": "pong"}), 200
 
         if not user_message or not sender_name:
         # Gracefully ignore invalid/empty messages
