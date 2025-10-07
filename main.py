@@ -248,10 +248,6 @@ def get_roast_response(user_message, group_name, sender_name):
 def home_route():
     return "✅ PSI-09-ROASTBOT is running."
 
-@app.route("/ping", methods=["GET"])
-def ping_route():
-    return "", 200
-
 @app.route("/psi09", methods=["POST"])
 def psi09():
     try:
