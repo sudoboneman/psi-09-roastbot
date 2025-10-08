@@ -168,6 +168,35 @@ def is_group_roast_trigger(msg):
     return False
 
 def get_roast_response(user_message, group_name, sender_name):
+    if sender_name == "PSI09_STATUS":
+        # Short, punchy, self-contained roast suitable for status
+        system_prompt = {
+        "role": "system",
+        "content": (
+            "You are PSI-09, the ultimate psychological insult bot. "
+            "Generate a **short, 1–2 sentence roast** suitable for posting as a WhatsApp Status. "
+            "This roast must be deep, philosophical, and eye-opening, attacking the viewer's sense of self, choices, or perception of reality. "
+            "It should gaslight, subtly provoke, and tempt them to reply in rebuttal, so that they inevitably trigger PSI-09’s private roasting in follow-up messages. "
+            "Make it poetic, cryptic, and sharp — like a riddle that burns the mind, leaving the reader unsettled, guilty, or infuriated. "
+            "Do not mention any usernames or individuals — the insult is aimed at the masses who will read it. "
+            "Each sentence should sting intellectually and emotionally, forcing reflection while still feeling like a direct verbal attack."
+            )
+        }
+
+        messages = [system_prompt, {"role": "user", "content": user_message}]
+        try:
+            response = client.chat.completions.create(
+                model=MODEL,
+                messages=messages,
+                max_tokens=60,
+                temperature=1.2,
+                presence_penalty=0.7,
+                frequency_penalty=0.8
+            )
+            return response.choices[0].message.content.strip()
+        except Exception:
+            return ""
+
     user_key = f"{group_name}:{sender_name}"
     chat = chat_history.get(user_key, [])
     history_len = len(chat)
