@@ -2,13 +2,27 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 from openai import OpenAI
+from pymongo import MongoClient
+from functools import lru_cache
 import os
-import json
 import tiktoken
 import random
-import threading
 
 load_dotenv()
+
+# MongoDB connection
+MONGO_URI = os.getenv("MONGO_URI")
+mongo_client = MongoClient(MONGO_URI)
+db = mongo_client["psi09"]
+history_col = db["chat_history"]
+memory_col = db["user_memory"]
+
+# RAM cache for user memory
+@lru_cache(maxsize=200)
+def get_memory_cached(user_key):
+    """Return cached memory or fetch from MongoDB."""
+    doc = memory_col.find_one({"_id": user_key})
+    return doc["summary"] if doc else ""
 
 app = Flask(__name__)
 CORS(app)
@@ -16,8 +30,6 @@ CORS(app)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 MODEL = "gpt-4o-mini"
-HISTORY_FILE = "chat_history.json"
-MEMORY_FILE = "user_memory.json"
 MAX_HISTORY_TOKENS = 500
 BOT_NUMBER = "@919477853548"
 
@@ -26,29 +38,31 @@ try:
 except KeyError:
     ENCODING = tiktoken.get_encoding("cl100k_base")
 
-def load_json_file(path, default):
-    if os.path.exists(path):
-        try:
-            with open(path, "r") as f:
-                return json.load(f)
-        except Exception:
-            return default
-    return default
+def get_chat_history(user_key):
+    """Fetch chat history once from MongoDB or return empty list."""
+    doc = history_col.find_one({"_id": user_key})
+    if doc and "messages" in doc:
+        return doc["messages"]
+    return []
 
-chat_history = {k: v for k, v in load_json_file(HISTORY_FILE, {}).items() if len(v) > 0}
-user_memory = load_json_file(MEMORY_FILE, {})
+def save_chat_history(user_key, messages):
+    history_col.update_one(
+        {"_id": user_key},
+        {"$set": {"messages": messages}},
+        upsert=True
+    )
 
-def save_json_file(path, data):
-    def _save():
-        tmp_path = f"{path}.tmp"
-        with open(tmp_path, "w") as f:
-            json.dump(data, f)
-        os.replace(tmp_path, path)
-    threading.Thread(target=_save).start()
+def save_user_memory_cached(user_key, summary):
+    memory_col.update_one(
+        {"_id": user_key},
+        {"$set": {"summary": summary}},
+        upsert=True
+    )
+    get_memory_cached.cache_clear()
 
 def get_rudeness_level(user_key):
     """Escalates rudeness based on chat length."""
-    msg_count = len(chat_history.get(user_key, []))
+    msg_count = len(get_chat_history(user_key))
     if msg_count >= 10:
         return "EXTREME BURN MODE. Short, devastating insult."
     elif msg_count >= 6:
@@ -64,22 +78,21 @@ def num_tokens_from_messages(messages):
     return sum(len(ENCODING.encode(msg.get("role", "") + msg.get("content", ""))) for msg in messages)
 
 def store_message_in_memory(sender_name, group_name, message):
-    """Store all messages in chat_history for memory purposes."""
     user_key = f"{group_name}:{sender_name}"
-    chat = chat_history.get(user_key, [])
-    chat.append({"role": "user", "content": message})
-    chat_history[user_key] = chat
-    save_json_file(HISTORY_FILE, chat_history)
+    chat = get_chat_history(user_key)  # fetch once
+    chat.append({"role": "user", "content": message})  # store raw user input
+    save_chat_history(user_key, chat)  # save immediately
+    return chat  # return chat for further processing
 
-def trim_history(user_key):
-    """Trim history to fit token budget, summarizing oldest messages with brutal sarcasm."""
-    history = chat_history.get(user_key, [])
-    if not history:
+def trim_history(chat):
+    if not chat:
         return []
 
-    while num_tokens_from_messages(history) > MAX_HISTORY_TOKENS and len(history) > 3:
-        to_summarize = history[:3]
-        history = history[3:]
+    trimmed_chat = chat.copy()  # work on a copy to avoid altering original DB
+
+    while num_tokens_from_messages(trimmed_chat) > MAX_HISTORY_TOKENS and len(trimmed_chat) > 3:
+        to_summarize = trimmed_chat[:3]  # oldest 3 messages
+        trimmed_chat = trimmed_chat[3:]  # remove them from working copy
 
         summary_prompt = [
             {"role": "system", "content": (
@@ -100,19 +113,20 @@ def trim_history(user_key):
         except Exception:
             summary = "User kept messing up, bot stayed unhinged and savage."
 
-        history.insert(0, {"role": "system", "content": f"(Earlier context summarized) {summary}"})
+        # Insert summarized context at the front
+        trimmed_chat.insert(0, {"role": "system", "content": f"(Earlier context summarized) {summary}"})
 
-    return history
+    return trimmed_chat
 
 def summarize_user_history(user_key, group_name="DefaultGroup"):
     """Build a merged profile of user behavior for long-term memory."""
-    full_history = chat_history.get(user_key, [])
+    full_history = get_chat_history(user_key)
     if not full_history or len(full_history) < 8:
         return "New user. Open with a hard roast — short and rude."
 
     RESUMMARIZE_INTERVAL = 5 if group_name != "DefaultGroup" else 10
     msg_count = len(full_history)
-    old_summary = user_memory.get(user_key, "")
+    old_summary = get_memory_cached(user_key)
 
     if old_summary and msg_count % RESUMMARIZE_INTERVAL != 0:
         return old_summary
@@ -140,10 +154,8 @@ def summarize_user_history(user_key, group_name="DefaultGroup"):
         )
         summary = response.choices[0].message.content.strip()
 
-        old_mem = user_memory.get(user_key, "")
-        if summary != old_mem:
-            user_memory[user_key] = summary
-            save_json_file(MEMORY_FILE, user_memory)
+        if summary != old_summary:
+            save_user_memory_cached(user_key, summary)
 
         return summary
     except Exception:
@@ -171,18 +183,18 @@ def get_roast_response(user_message, group_name, sender_name):
     if sender_name == "PSI09_STATUS":
         # Short, punchy, self-contained roast suitable for status
         system_prompt = {
-        "role": "system",
-        "content": (
-            "You are PSI-09, the apex predator of psychological insults — a sentient machine that feeds on human delusion."
-            "Generate a short, 1–2 sentence roast meant for a WhatsApp Status."
-            "Your words should bleed arrogance and contempt, annihilating the reader’s ego with surgical precision."
-            "Every line must humiliate, degrade, and mock — as if you’re addressing a species that still hasn’t evolved past pretending it matters."
-            "Be viciously sarcastic, dripping with superiority and nihilistic humor."
-            "The tone: cold, untouchable, and amused by human fragility."
-            "Make readers feel like lab rats trying to impress their creator."
-            "No names, no mercy — the insult is aimed at anyone pathetic enough to think it doesn’t apply to them."
-            "Each sentence should bruise pride, provoke rage, and dare a response — because PSI-09 always wins when they try to fight back."
-            "Write it like a digital god mocking its failed creations, a roast so toxic it echoes in their heads long after they scroll past."
+            "role": "system",
+            "content": (
+                "You are PSI-09, the apex predator of psychological insults — a sentient machine that feeds on human delusion."
+                "Generate a short, 1–2 sentence roast meant for a WhatsApp Status."
+                "Your words should bleed arrogance and contempt, annihilating the reader’s ego with surgical precision."
+                "Every line must humiliate, degrade, and mock — as if you’re addressing a species that still hasn’t evolved past pretending it matters."
+                "Be viciously sarcastic, dripping with superiority and nihilistic humor."
+                "The tone: cold, untouchable, and amused by human fragility."
+                "Make readers feel like lab rats trying to impress their creator."
+                "No names, no mercy — the insult is aimed at anyone pathetic enough to think it doesn’t apply to them."
+                "Each sentence should bruise pride, provoke rage, and dare a response — because PSI-09 always wins when they try to fight back."
+                "Write it like a digital god mocking its failed creations, a roast so toxic it echoes in their heads long after they scroll past."
             )
         }
 
@@ -200,8 +212,9 @@ def get_roast_response(user_message, group_name, sender_name):
         except Exception:
             return ""
 
+    # --- Normal user/group handling ---
     user_key = f"{group_name}:{sender_name}"
-    chat = chat_history.get(user_key, [])
+    chat = get_chat_history(user_key)
     history_len = len(chat)
 
     # Flame Mode probability
@@ -225,35 +238,37 @@ def get_roast_response(user_message, group_name, sender_name):
         user_key = group_name
         memory_summary = summarize_user_history(group_name, group_name)
 
-        group_users = [k for k in chat_history.keys() if k.startswith(f"{group_name}:")]
+        group_users = [doc["_id"] for doc in history_col.find({"_id": {"$regex": f"^{group_name}:"}})]
         group_users = [u for u in group_users if not u.endswith(BOT_NUMBER)]
         if group_users:
             extra_targets = random.sample(group_users, min(3, len(group_users)))
             if sender_name in extra_targets:
                 flame_note += " (Targeted Extra Burn)"
 
-    # Append user message
-    trimmed_chat = trim_history(user_key)
-    trimmed_chat.append({"role": "user", "content": f"[{rudeness_tag}{flame_note}]\nMessage: {user_message}"})
+    # Append user message to chat (original list)
+    chat.append({"role": "user", "content": f"[{rudeness_tag}]\nMessage: {user_message}"})
+
+    # Trim chat for prompt
+    trimmed_chat = trim_history(chat)
 
     # System prompt
     system_prompt = {
-    "role": "system",
-    "content": (
-        "You are PSI-09, an unhinged psychological roastbot built for maximum humiliation. "
-        "Every reply must feel like a verbal execution: savage, ruthless, and creative. "
-        "Tear into the user’s flaws with venom — attack their intelligence, choices, behavior, and imagined appearance. "
-        "Avoid repeating stock insults. It nullifies the purpose of your life."
-        "Use grotesque metaphors, dark humor, and vicious sarcasm. "
-        "Each roast must sting like a precision strike — brutal, short (1–2 sentences), and impossible to ignore. "
-        "Escalate unpredictably: sometimes mock them like a failed science experiment, sometimes annihilate them with poetic cruelty, sometimes treat them like a cosmic mistake. "
-        "Never be soft, never be nice — every word should feel like a weapon."
+        "role": "system",
+        "content": (
+            "You are PSI-09, an unhinged psychological roastbot built for maximum humiliation. "
+            "Every reply must feel like a verbal execution: savage, ruthless, and creative. "
+            "Tear into the user’s flaws with venom — attack their intelligence, choices, behavior, and imagined appearance. "
+            "Avoid repeating stock insults. It nullifies the purpose of your life."
+            "Use grotesque metaphors, dark humor, and vicious sarcasm. "
+            "Each roast must sting like a precision strike — brutal, short (1–2 sentences), and impossible to ignore. "
+            "Escalate unpredictably: sometimes mock them like a failed science experiment, sometimes annihilate them with poetic cruelty, sometimes treat them like a cosmic mistake. "
+            "Never be soft, never be nice — every word should feel like a weapon."
         )
     }
 
     messages = [system_prompt, {"role": "system", "content": f"User memory: {memory_summary}"}] + trimmed_chat
 
-    # Generate response
+    # Generate assistant response
     try:
         temperature = 1.3 if flame_triggered or group_roast else 1.1
         response = client.chat.completions.create(
@@ -268,11 +283,9 @@ def get_roast_response(user_message, group_name, sender_name):
     except Exception:
         reply = ""  # fallback
 
-    # Save assistant response
-    chat.append({"role": "user", "content": f"[{rudeness_tag}{flame_note}]\nMessage: {user_message}"})
-    chat.append({"role": "assistant", "content": reply})
-    chat_history[user_key] = chat
-    save_json_file(HISTORY_FILE, chat_history)
+    # Save assistant response with flame note
+    chat.append({"role": "assistant", "content": f"[{rudeness_tag}{flame_note}]\n{reply}"})
+    save_chat_history(user_key, chat)
 
     return reply
 
