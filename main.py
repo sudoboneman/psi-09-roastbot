@@ -278,7 +278,7 @@ def get_roast_response(user_message, group_name, sender_name):
         response = client.chat.completions.create(
             model=MODEL,
             messages=messages,
-            max_tokens=110,
+            max_tokens=100,
             temperature=temperature,
             presence_penalty=0.7,
             frequency_penalty=0.8
