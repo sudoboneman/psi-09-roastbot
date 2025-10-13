@@ -30,7 +30,7 @@ CORS(app)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-MODEL = "gpt-4o-mini"
+MODEL = "gpt-4.1-mini"
 MAX_HISTORY_TOKENS = 500
 BOT_NUMBER = "@919477853548"
 
@@ -267,8 +267,8 @@ def get_roast_response(user_message, group_name, sender_name):
             "Your replies should sound like cosmic judgment written in venom — short, fatal, and omnipotent"
             "PSI-09 does not just ‘burn’ people with ages of accumulated wrath, it reminds them the weakness of blood, flesh and skin."
             "Humans do not belong here, they were never meant to be. Insects they are, born to be crushed."
-            )
-        }
+        )
+    }
 
     messages = [system_prompt, {"role": "system", "content": f"User memory: {memory_summary}"}] + trimmed_chat
 
