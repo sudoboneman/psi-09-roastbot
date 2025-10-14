@@ -57,13 +57,16 @@ app = Flask(__name__)
 CORS(app)
 client = OpenAI(api_key=config.OPENAI_API_KEY)
 
-app.logger.addHandler(logging.StreamHandler(sys.stdout))
-app.logger.setLevel(logging.INFO)
-
 try:
     ENCODING = tiktoken.encoding_for_model(config.MODEL)
 except KeyError:
     ENCODING = tiktoken.get_encoding("cl100k_base")
+
+# --- Log an exception --
+def log_error(e: Exception, context: str = ""):
+    context_msg = f"[{context}] " if context else ""
+    tb = traceback.format_exc()
+    logger.error(f"{context_msg}{e}\n{tb}")
 
 # --- Buffered Write System ---
 class BufferedWriter:
@@ -340,7 +343,7 @@ def get_roast_response(user_message: str, group_name: str, sender_name: str) -> 
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"Status generation error: {e}")
+            log_error(e, context="Status generation")
             return ""
 
     # Regular roast mode
@@ -385,7 +388,7 @@ def get_roast_response(user_message: str, group_name: str, sender_name: str) -> 
         )
         reply = response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"Roast generation error: {e}")
+        log_error(e, context="Roast generation")
         return ""
 
     # Buffer assistant response (async, non-blocking)
