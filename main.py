@@ -10,6 +10,7 @@ import random
 import re
 import threading
 import time
+import sys, traceback
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from dataclasses import dataclass
@@ -54,6 +55,9 @@ memory_col = db["user_memory"]
 app = Flask(__name__)
 CORS(app)
 client = OpenAI(api_key=config.OPENAI_API_KEY)
+
+app.logger.addHandler(logging.StreamHandler(sys.stdout))
+app.logger.setLevel(logging.INFO)
 
 try:
     ENCODING = tiktoken.encoding_for_model(config.MODEL)
@@ -335,7 +339,7 @@ def get_roast_response(user_message: str, group_name: str, sender_name: str) -> 
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"❌ Status generation error: {e}")
+            print(f"Status generation error: {e}")
             return ""
 
     # Regular roast mode
@@ -380,7 +384,8 @@ def get_roast_response(user_message: str, group_name: str, sender_name: str) -> 
         )
         reply = response.choices[0].message.content.strip()
     except Exception as e:
-        reply = {e}
+        print(f"Roast generation error: {e}")
+        return ""
 
     # Buffer assistant response (async, non-blocking)
     if reply:
@@ -434,7 +439,7 @@ def psi09():
         return jsonify({"reply": response or ""}), 200
 
     except Exception as e:
-        print(f"❌ Error in /psi09: {e}")
+        print(f"Error in /psi09: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/health", methods=["GET"])
@@ -470,5 +475,5 @@ atexit.register(cleanup)
 # --- Run Server ---
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    print(f"🚀 PSI-09-ROASTBOT starting on port {port}")
+    print(f"PSI-09-ROASTBOT starting on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
