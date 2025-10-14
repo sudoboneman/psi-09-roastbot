@@ -51,11 +51,10 @@ history_col = db["chat_history"]
 memory_col = db["user_memory"]
 contacts_col = db["contacts_registry"]
 
-# Create indexes with background=True for non-blocking
-history_col.create_index("_id", background=True)
-memory_col.create_index("_id", background=True)
-contacts_col.create_index("_id", background=True)
-contacts_col.create_index("last_seen", background=True)
+history_col.create_index("_id")
+memory_col.create_index("_id")
+contacts_col.create_index("_id")
+contacts_col.create_index("last_seen")
 
 # --- Flask & OpenAI Setup ---
 app = Flask(__name__)
