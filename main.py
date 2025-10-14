@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 from openai import OpenAI
+from openai.error import APIError, APIConnectionError, RateLimitError, InvalidRequestError, AuthenticationError
 from pymongo import MongoClient, UpdateOne
 from pymongo.errors import BulkWriteError
 import os
@@ -22,39 +23,33 @@ load_dotenv()
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
-    MODEL: str = "gpt-4o-mini"
-    MAX_HISTORY_TOKENS: int = 200
+    MODEL: str = "gpt-5o-mini"
+    MAX_HISTORY_TOKENS: int = 500
     BOT_NUMBER: str = "@919477853548"
-    WRITE_INTERVAL: int = 3
-    BATCH_SIZE: int = 50
-    MEMORY_TTL: int = 300  # seconds
-    MAX_HISTORY_MESSAGES: int = 50
-    RESUMMARIZE_INTERVAL_GROUP: int = 5
-    RESUMMARIZE_INTERVAL_PERSONAL: int = 10
+    WRITE_INTERVAL: int = 5  # Increased from 3 (less frequent writes)
+    BATCH_SIZE: int = 100  # Increased from 50 (bigger batches)
+    MEMORY_TTL: int = 300
+    MAX_HISTORY_MESSAGES: int = 30  # Reduced from 50
+    RESUMMARIZE_INTERVAL_GROUP: int = 8  # Increased from 5
+    RESUMMARIZE_INTERVAL_PERSONAL: int = 15  # Increased from 10
 
 config = Config()
 
 # --- Database Setup ---
 mongo_client = MongoClient(
     config.MONGO_URI,
-    maxPoolSize=100,  # Increased from 50
-    minPoolSize=10,   # Keep connections warm
-    maxIdleTimeMS=45000,
-    serverSelectionTimeoutMS=3000,  # Reduced from 5000
-    connectTimeoutMS=3000,
-    socketTimeoutMS=10000,
-    retryWrites=True,
-    w=1  # Fast writes (don't wait for replication)
+    maxPoolSize=150,  # Increased from 100
+    minPoolSize=20,   # Increased from 10
+    maxIdleTimeMS=60000,  # Increased
+    serverSelectionTimeoutMS=2000,  # Reduced from 3000
+    connectTimeoutMS=2000,  # Reduced from 3000
+    socketTimeoutMS=5000,  # Reduced from 10000
+    retryWrites=False,
+    w=0  # Fastest writes (no acknowledgment)
 )
 db = mongo_client["psi09"]
 history_col = db["chat_history"]
 memory_col = db["user_memory"]
-contacts_col = db["contacts_registry"]
-
-history_col.create_index("_id")
-memory_col.create_index("_id")
-contacts_col.create_index("_id")
-contacts_col.create_index("last_seen")
 
 # --- Flask & OpenAI Setup ---
 app = Flask(__name__)
@@ -142,99 +137,19 @@ class MemoryCache:
         return summary
 
     def set(self, key: str, value: str):
+        """Update Mongo and immediately refresh cache to avoid stale reads."""
+        now = datetime.now(timezone.utc)
         memory_col.update_one({"_id": key}, {"$set": {"summary": value}}, upsert=True)
         with self.lock:
-            self.cache.pop(key, None)
+            # Refresh cache with the new value and updated expiry
+            self.cache[key] = (value, now + self.ttl)
+
 
     def invalidate(self, key: str):
         with self.lock:
             self.cache.pop(key, None)
 
 memory_cache = MemoryCache(config.MEMORY_TTL)
-
-# --- Contact Registry ---
-class ContactRegistry:
-    @staticmethod
-    def register(sender_name: str, group_name: str):
-        """Register or update contact - fire and forget."""
-        # Non-blocking update
-        threading.Thread(
-            target=lambda: contacts_col.update_one(
-                {"_id": sender_name},
-                {
-                    "$addToSet": {"groups": group_name} if group_name != "DefaultGroup" else {},
-                    "$set": {
-                        "last_seen": datetime.now(timezone.utc),
-                        "user_key": f"{group_name}:{sender_name}"
-                    }
-                },
-                upsert=True
-            ),
-            daemon=True
-        ).start()
-
-    @staticmethod
-    def get_info(contact_name: str) -> Optional[Dict]:
-        """Get contact information with minimal queries."""
-        # Single aggregation pipeline instead of multiple queries
-        pipeline = [
-            {"$match": {"_id": contact_name}},
-            {"$lookup": {
-                "from": "user_memory",
-                "localField": "user_key",
-                "foreignField": "_id",
-                "as": "memory_doc"
-            }},
-            {"$lookup": {
-                "from": "chat_history",
-                "localField": "user_key",
-                "foreignField": "_id",
-                "as": "history_doc"
-            }},
-            {"$project": {
-                "user_key": 1,
-                "groups": 1,
-                "last_seen": 1,
-                "memory": {"$arrayElemAt": ["$memory_doc.summary", 0]},
-                "message_count": {"$size": {"$ifNull": [{"$arrayElemAt": ["$history_doc.messages", 0]}, []]}}
-            }}
-        ]
-
-        result = list(contacts_col.aggregate(pipeline))
-        if not result:
-            return None
-
-        contact = result[0]
-        return {
-            "name": contact_name,
-            "memory": contact.get("memory") or "No profile available yet.",
-            "interactions": contact.get("message_count", 0),
-            "groups": contact.get("groups", []),
-            "last_seen": contact.get("last_seen")
-        }
-
-    @staticmethod
-    def find_mentioned(message: str) -> List[str]:
-        """Extract mentioned contact names from message."""
-        patterns = [
-            r'about\s+(\w+)', r'tell\s+me\s+about\s+(\w+)',
-            r'what\s+about\s+(\w+)', r'(\w+)\s+said',
-            r'(\w+)\s+told', r'do\s+you\s+know\s+(\w+)',
-            r'(\w+)\'s', r'how\s+is\s+(\w+)',
-            r'what\s+do\s+you\s+think\s+of\s+(\w+)',
-            r'roast\s+(\w+)',
-        ]
-
-        mentioned = set()
-        for pattern in patterns:
-            matches = re.findall(pattern, message, re.IGNORECASE)
-            mentioned.update(matches)
-
-        # Get all registered contacts
-        all_contacts = {doc["_id"].lower(): doc["_id"] for doc in contacts_col.find({}, {"_id": 1})}
-
-        # Return only valid contacts
-        return [all_contacts[name.lower()] for name in mentioned if name.lower() in all_contacts]
 
 # --- Chat History Helpers ---
 def get_chat_history(user_key: str, limit: int = None) -> List[Dict]:
@@ -251,10 +166,9 @@ def num_tokens(messages: List[Dict]) -> int:
     return sum(len(ENCODING.encode(msg.get("role", "") + msg.get("content", ""))) for msg in messages)
 
 def store_message(sender_name: str, group_name: str, message: str):
-    """Store message in buffer and register contact (non-blocking)."""
+    """Store message in buffer (non-blocking)."""
     user_key = f"{group_name}:{sender_name}"
     writer.buffer_message(user_key, {"role": "user", "content": message})
-    ContactRegistry.register(sender_name, group_name)  # Now async
 
 # --- AI Helper Functions ---
 def trim_history(chat: List[Dict]) -> List[Dict]:
@@ -294,9 +208,9 @@ def trim_history(chat: List[Dict]) -> List[Dict]:
 
 def summarize_user_history(user_key: str, group_name: str = "DefaultGroup") -> str:
     """Build user profile from chat history with async DB write."""
-    hist = get_chat_history(user_key, limit=50)  # Reduced from 200 for speed
+    hist = get_chat_history(user_key, limit=30)  # Reduced from 50 for speed
 
-    if not hist or len(hist) < 8:
+    if not hist or len(hist) < 5:  # Reduced from 8
         return "New user. Open with a hard roast — short and rude."
 
     interval = config.RESUMMARIZE_INTERVAL_GROUP if group_name != "DefaultGroup" else config.RESUMMARIZE_INTERVAL_PERSONAL
@@ -309,21 +223,19 @@ def summarize_user_history(user_key: str, group_name: str = "DefaultGroup") -> s
     summary_prompt = [{
         "role": "system",
         "content": (
-            f"You are PSI-09, the 'psychological insult' roastbot. "
-            f"Merge old profile with new observations.\n\n"
-            f"Old profile (if any): '{old_summary}'\n\n"
-            "Analyze last 20 messages and update this profile. "
-            "Keep it brutally short (1–3 lines). Style: sharp, sarcastic, cold."
+            "You are PSI-09. Merge old profile with new observations. "
+            f"Old: '{old_summary}'. Analyze last 15 messages. "
+            "Keep it brutally short (1-2 lines). Sharp, sarcastic, cold."
         )
-    }] + hist[-20:]
+    }] + hist[-15:]  # Reduced from 20
 
     try:
         response = client.chat.completions.create(
             model=config.MODEL,
             messages=summary_prompt,
-            max_tokens=90,
+            max_tokens=60,  # Reduced from 90
             temperature=0.9,
-            timeout=5  # Add timeout for OpenAI call
+            timeout=4  # Reduced from 5
         )
         summary = response.choices[0].message.content.strip()
 
@@ -416,10 +328,11 @@ def get_roast_response(user_message: str, group_name: str, sender_name: str) -> 
                     {"role": "system", "content": STATUS_PROMPT},
                     {"role": "user", "content": user_message}
                 ],
-                max_tokens=60,
+                max_tokens=80,
                 temperature=1.2,
                 presence_penalty=0.7,
-                frequency_penalty=0.8
+                frequency_penalty=0.8,
+                timeout=6
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -430,27 +343,8 @@ def get_roast_response(user_message: str, group_name: str, sender_name: str) -> 
     user_key = f"{group_name}:{sender_name}"
     chat = get_chat_history(user_key)
 
-    # Check for mentioned contacts
-    mentioned_contacts = ContactRegistry.find_mentioned(user_message)
-    contact_context = ""
-
-    if mentioned_contacts:
-        contact_info = []
-        for name in mentioned_contacts:
-            info = ContactRegistry.get_info(name)
-            if info:
-                contact_info.append(
-                    f"About {name}: {info['memory']} "
-                    f"(Interacted {info['interactions']} times, "
-                    f"in groups: {', '.join(info['groups']) if info['groups'] else 'personal only'})"
-                )
-
-        if contact_info:
-            contact_context = "\n\n[INTEL ON MENTIONED CONTACTS]\n" + "\n".join(contact_info)
-            contact_context += "\n\nUse this intel to roast them specifically. Be ruthless with your insider knowledge."
-
-    # Calculate flame mode
-    flame_triggered = calculate_flame_probability(len(chat), user_message)
+    # Calculate flame mode (simplified)
+    flame_triggered = len(chat) > 5 and random.random() < 0.4
     flame_note = " (Flame Mode)" if flame_triggered else ""
 
     # Get rudeness and memory
@@ -464,13 +358,13 @@ def get_roast_response(user_message: str, group_name: str, sender_name: str) -> 
         user_key = group_name
         memory = summarize_user_history(group_name, group_name)
 
-    # Prepare messages
-    chat.append({"role": "user", "content": f"[{rudeness}{flame_note}]\nMessage: {user_message}"})
+    # Prepare messages (simplified)
+    chat.append({"role": "user", "content": f"[{rudeness}{flame_note}]\n{user_message}"})
     trimmed = trim_history(chat)
 
     messages = [
         {"role": "system", "content": ROAST_PROMPT},
-        {"role": "system", "content": f"User memory: {memory}{contact_context}"}
+        {"role": "system", "content": f"Memory: {memory}"}
     ] + trimmed
 
     # Generate response
@@ -479,15 +373,20 @@ def get_roast_response(user_message: str, group_name: str, sender_name: str) -> 
         response = client.chat.completions.create(
             model=config.MODEL,
             messages=messages,
-            max_tokens=100,
+            max_tokens=100,  # Reduced from 100
             temperature=temp,
             presence_penalty=0.7,
             frequency_penalty=0.8,
-            timeout=8  # Add timeout
+            timeout=6  # Reduced from 8
         )
         reply = response.choices[0].message.content.strip()
+    except (APIError, APIConnectionError, RateLimitError, InvalidRequestError, AuthenticationError) as e:
+        # Only OpenAI API-specific errors
+        print(f"⚠️ OpenAI API error: {e}")
+        reply = ""
     except Exception as e:
-        print(f"❌ Roast generation error: {e}")
+        # Catch-all for other unexpected Python errors
+        print(f"❌ Unexpected error in roast generation: {e}")
         reply = ""
 
     # Buffer assistant response (async, non-blocking)
@@ -545,18 +444,6 @@ def psi09():
         print(f"❌ Error in /psi09: {e}")
         return jsonify({"error": str(e)}), 500
 
-@app.route("/contacts", methods=["GET"])
-def view_contacts():
-    """View all registered contacts."""
-    try:
-        contacts = list(contacts_col.find({}, {"_id": 1, "groups": 1, "last_seen": 1}))
-        return jsonify({
-            "total_contacts": len(contacts),
-            "contacts": contacts
-        }), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 @app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint."""
@@ -578,10 +465,11 @@ def health_check():
 
 # --- Cleanup on Shutdown ---
 def cleanup():
-    print("🛑 Shutting down PSI-09...")
-    writer.stop()
-    mongo_client.close()
-    print("✅ Cleanup complete")
+    """Flush pending writes silently if Python process stops."""
+    try:
+        writer.stop()  # final flush only
+    except Exception:
+        pass
 
 import atexit
 atexit.register(cleanup)
