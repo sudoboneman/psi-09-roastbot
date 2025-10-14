@@ -22,7 +22,7 @@ load_dotenv()
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
-    MODEL: str = "gpt-5o-mini"
+    MODEL: str = "gpt-4o-mini"
     MAX_HISTORY_TOKENS: int = 400
     BOT_NUMBER: str = "@919477853548"
     WRITE_INTERVAL: int = 5  # Increased from 3 (less frequent writes)
