@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 from openai import OpenAI
-from openai.error import APIError, APIConnectionError, RateLimitError, InvalidRequestError, AuthenticationError
 from pymongo import MongoClient, UpdateOne
 from pymongo.errors import BulkWriteError
 import os
@@ -24,7 +23,7 @@ class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
     MODEL: str = "gpt-5o-mini"
-    MAX_HISTORY_TOKENS: int = 500
+    MAX_HISTORY_TOKENS: int = 400
     BOT_NUMBER: str = "@919477853548"
     WRITE_INTERVAL: int = 5  # Increased from 3 (less frequent writes)
     BATCH_SIZE: int = 100  # Increased from 50 (bigger batches)
@@ -380,13 +379,8 @@ def get_roast_response(user_message: str, group_name: str, sender_name: str) -> 
             timeout=6  # Reduced from 8
         )
         reply = response.choices[0].message.content.strip()
-    except (APIError, APIConnectionError, RateLimitError, InvalidRequestError, AuthenticationError) as e:
-        # Only OpenAI API-specific errors
-        print(f"⚠️ OpenAI API error: {e}")
-        reply = ""
     except Exception as e:
-        # Catch-all for other unexpected Python errors
-        print(f"❌ Unexpected error in roast generation: {e}")
+        print(f"❌ Unexpected error : {e}")
         reply = ""
 
     # Buffer assistant response (async, non-blocking)
