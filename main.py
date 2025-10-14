@@ -380,8 +380,7 @@ def get_roast_response(user_message: str, group_name: str, sender_name: str) -> 
         )
         reply = response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"❌ Unexpected error : {e}")
-        reply = ""
+        reply = {e}
 
     # Buffer assistant response (async, non-blocking)
     if reply:
