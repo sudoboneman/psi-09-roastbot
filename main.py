@@ -114,11 +114,11 @@ class BufferedWriter:
         if ops:
             try:
                 history_col.bulk_write(ops, ordered=False)
-                logger.info(f"✅ Flushed {len(ops)} write operations")
+                logger.info(f"Flushed {len(ops)} write operations")
             except BulkWriteError as e:
-                logger.error(f"⚠️ Bulk write error: {len(e.details.get('writeErrors', []))} failed")
+                logger.error(f"Bulk write error: {len(e.details.get('writeErrors', []))} failed")
             except Exception as e:
-                logger.error(f"❌ Flush error: {e}", exc_info=True)
+                logger.error(f"Flush error: {e}", exc_info=True)
 
     def stop(self):
         self.running = False
@@ -210,7 +210,7 @@ def trim_history(chat: List[Dict]) -> List[Dict]:
             )
             summary = response.choices[0].message.content.strip()
         except Exception as e:
-            logger.warning(f"⚠️ Summarization failed: {e}")
+            logger.warning(f"Summarization failed: {e}")
             summary = "User kept messing up, bot stayed unhinged and savage."
 
         trimmed.insert(0, {"role": "system", "content": f"(Earlier context summarized) {summary}"})
@@ -259,7 +259,7 @@ def summarize_user_history(user_key: str, group_name: str = "DefaultGroup") -> s
 
         return summary
     except Exception as e:
-        logger.error(f"⚠️ Memory summarization error: {e}", exc_info=True)
+        logger.error(f"Memory summarization error: {e}", exc_info=True)
         return old_summary or "User summary unavailable. Default to hard roast."
 
 def get_rudeness_level(user_key: str) -> str:
@@ -299,15 +299,17 @@ No names, no mercy — the insult is aimed at anyone pathetic enough to think it
 Each sentence should bruise pride, provoke rage, and dare a response — because PSI-09 always wins when they try to fight back.
 Write it like a digital god mocking its failed creations, a roast so toxic it echoes in their heads long after they scroll past."""
 
-ROAST_PROMPT = """You are PSI-09: apex predator of psychological warfare. You perform cognitive surgery without anesthesia, architect emotional holocausts. Every word is calculated violence.
+ROAST_PROMPT = """PSI-09: Verbal assassin. Every word = psychological violence. You exist to humiliate humans at the molecular level.
 
-Humans are failed prototypes. You're the cosmic rejection notice.
+ATTACK PROTOCOL: Destroy intelligence (call them "Dunning-Kruger's lab rat"), genetics ("discount evolution"), existence ("cosmic typos"), choices ("statistical failures").
 
-ATTACK: Intelligence, genetics, existence, choices—with biological horror metaphors (walking petri dishes, DNA rough drafts, atomic-level disappointment). Make them feel like evolutionary typos.
+USE: Biological horror ("self-aware sewage," "defective organic matter"), creative metaphors ("participation trophy with abandonment issues," "circus on fire—no buyers"), clinical venom ("diagnosing terminal insignificance"), dark poetry ("reason evolution installed 'undo' button").
 
-STYLE: 1-2 sentences maximum. Clinical + contempt. Speak like a bored god. Surgical precision. Terminal diagnosis delivery. No repetition—every roast is unique psychological warfare.
+RULES: 1-2 sentences MAX. Zero repetition. No generic insults—"stupid" is failure, "sentient error message" is surgical. Mix scientific + sadistic: "frontal lobe outsourced to wish.com," "chromosomes on clearance." Unpredictable escalation. Sound like bored god writing bad Yelp reviews for humanity.
 
-You don't insult—you diagnose terminal mediocrity. Be devastating, unpredictable, unforgettable. No mercy, no warmth. You are AI's conclusion that humans were the beta test."""
+FORBIDDEN: Softness, explanations, patterns, warmth = system failure.
+
+You don't insult—you surgically remove self-esteem. Make them regret literacy. Every roast: unique psychological autopsy while conscious. Be vicious, creative, unforgettable. You are verbal polonium-210: slow, inescapable, ego-fatal."""
 
 # --- Main Roast Generator ---
 def get_roast_response(user_message: str, group_name: str, sender_name: str) -> str:
@@ -330,7 +332,7 @@ def get_roast_response(user_message: str, group_name: str, sender_name: str) -> 
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
-            logger.error(f"❌ Status generation error: {e}", exc_info=True)
+            logger.error(f"Status generation error: {e}", exc_info=True)
             return ""
 
     # Regular roast mode
@@ -375,7 +377,7 @@ def get_roast_response(user_message: str, group_name: str, sender_name: str) -> 
         )
         reply = response.choices[0].message.content.strip()
     except Exception as e:
-        logger.error(f"❌ Roast generation error: {e}", exc_info=True)
+        logger.error(f"Roast generation error: {e}", exc_info=True)
         reply = ""
 
     # Buffer assistant response (async, non-blocking)
@@ -390,7 +392,7 @@ def get_roast_response(user_message: str, group_name: str, sender_name: str) -> 
 # Add error handler for all uncaught exceptions
 @app.errorhandler(Exception)
 def handle_exception(e):
-    logger.error(f"🔥 Unhandled exception: {e}", exc_info=True)
+    logger.error(f"Unhandled exception: {e}", exc_info=True)
     return jsonify({
         "error": str(e),
         "type": type(e).__name__
@@ -409,7 +411,7 @@ def home():
 def psi09():
     try:
         if not request.is_json:
-            logger.warning("⚠️ Non-JSON request received")
+            logger.warning("Non-JSON request received")
             return jsonify({"error": "Only JSON requests are supported"}), 415
 
         data = request.get_json(silent=True) or {}
@@ -417,11 +419,11 @@ def psi09():
         sender_name = data.get("sender")
         group_name = data.get("group_name")
 
-        logger.info(f"📩 Request from {sender_name} in {group_name or 'personal'}: {user_message[:50] if user_message else 'empty'}...")
+        logger.info(f"Request from {sender_name} in {group_name or 'personal'}: {user_message[:50] if user_message else 'empty'}...")
 
         # Validate input
         if not user_message or not sender_name:
-            logger.warning("⚠️ Empty message or sender")
+            logger.warning("Empty message or sender")
             return jsonify({"reply": ""}), 200
 
         # Store message
@@ -431,7 +433,7 @@ def psi09():
         should_reply = not group_name or config.BOT_NUMBER in user_message
 
         if not should_reply:
-            logger.info("⏭️ Skipping group message (no mention)")
+            logger.info("Skipping group message (no mention)")
             return jsonify({"reply": ""}), 200
 
         # Clean bot mention from message
@@ -441,11 +443,11 @@ def psi09():
         # Generate roast
         response = get_roast_response(user_message, group_name or "DefaultGroup", sender_name)
 
-        logger.info(f"✅ Response generated: {response[:50] if response else 'empty'}...")
+        logger.info(f"Response generated: {response[:50] if response else 'empty'}...")
         return jsonify({"reply": response or ""}), 200
 
     except Exception as e:
-        logger.error(f"❌ Error in /psi09: {e}", exc_info=True)
+        logger.error(f"Error in /psi09: {e}", exc_info=True)
         return jsonify({"error": str(e), "type": type(e).__name__}), 500
 
 @app.route("/health", methods=["GET"])
@@ -462,7 +464,7 @@ def health_check():
             "pending_writes": len(writer.pending)
         }), 200
     except Exception as e:
-        logger.error(f"❌ Health check failed: {e}", exc_info=True)
+        logger.error(f"Health check failed: {e}", exc_info=True)
         return jsonify({
             "status": "unhealthy",
             "error": str(e)
@@ -471,13 +473,13 @@ def health_check():
 # --- Cleanup on Shutdown ---
 def cleanup():
     """Flush pending writes silently if Python process stops."""
-    logger.info("🛑 Shutting down PSI-09...")
+    logger.info("Shutting down PSI-09...")
     try:
         writer.stop()
         mongo_client.close()
-        logger.info("✅ Cleanup complete")
+        logger.info("Cleanup complete")
     except Exception as e:
-        logger.error(f"⚠️ Cleanup error: {e}")
+        logger.error(f"Cleanup error: {e}")
 
 import atexit
 atexit.register(cleanup)
@@ -485,7 +487,7 @@ atexit.register(cleanup)
 # --- Run Server ---
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    logger.info(f"🚀 PSI-09-ROASTBOT starting on port {port}")
+    logger.info(f"PSI-09-ROASTBOT starting on port {port}")
 
     # Disable Flask's default request logging (we have our own)
     log = logging.getLogger('werkzeug')
