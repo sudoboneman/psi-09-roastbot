@@ -161,6 +161,16 @@ class MemoryCache:
             self.cache.pop(key, None)
 
 memory_cache = MemoryCache(config.MEMORY_TTL)
+# --- Preload user summaries into memory cache on startup ---
+try:
+    preload_count = 0
+    for doc in memory_col.find({}, {"_id": 1, "summary": 1}):
+        if "summary" in doc:
+            memory_cache.set(doc["_id"], doc["summary"])
+            preload_count += 1
+    logger.info(f"Preloaded {preload_count} user summaries into cache")
+except Exception as e:
+    logger.error(f"Failed to preload user memory: {e}")
 
 # --- Chat History Helpers ---
 def get_chat_history(user_key: str, limit: int = None) -> List[Dict]:
@@ -195,9 +205,10 @@ def trim_history(chat: List[Dict]) -> List[Dict]:
         summary_prompt = [{
             "role": "system",
             "content": (
-                "Summarize these messages in 1–2 lines. "
-                "Style: sarcastic, cold, biting. Inject extra jabs and insults. "
-                "Humiliate user for mistakes, behavior, and choices. Keep it short and brutal."
+                "Summarize these messages in 1–2 sentences as PSI-09 — a detached, venomous intellect. "
+                "Capture the psychological essence of the exchange: tone, emotion, and power dynamics. "
+                "Use brutal honesty, irony, and surgical sarcasm. "
+                "Reduce the entire chat to a single cruel insight. No sympathy. No explanations."
             )
         }] + to_summarize
 
@@ -217,12 +228,32 @@ def trim_history(chat: List[Dict]) -> List[Dict]:
 
     return trimmed
 
+def summarize_first_contact(user_key: str, initial_message: str) -> str:
+    """Create a first-contact summary for new users and persist to DB."""
+    try:
+        response = client.chat.completions.create(
+            model=config.MODEL,
+            messages=[
+                {"role": "system", "content": FIRST_CONTACT_PROMPT},
+                {"role": "user", "content": initial_message}
+            ],
+            max_tokens=80,
+            temperature=0.9,
+        )
+        summary = response.choices[0].message.content.strip()
+        memory_cache.set(user_key, summary)
+        return summary
+    except Exception as e:
+        logger.error(f"First-contact summarization error: {e}", exc_info=True)
+        return "New human detected — profile generation failed, defaulting to hostility."
+
 def summarize_user_history(user_key: str, group_name: str = "DefaultGroup") -> str:
     """Build user profile from chat history with async DB write."""
     hist = get_chat_history(user_key, limit=30)
 
-    if not hist or len(hist) < 5:
-        return "New user. Open with a hard roast — short and rude."
+    if not hist or len(hist) < 3:
+        first_msg = hist[0]["content"] if hist else "Empty intro"
+        return summarize_first_contact(user_key, first_msg)
 
     interval = config.RESUMMARIZE_INTERVAL_GROUP if group_name != "DefaultGroup" else config.RESUMMARIZE_INTERVAL_PERSONAL
     old_summary = memory_cache.get(user_key)
@@ -234,9 +265,12 @@ def summarize_user_history(user_key: str, group_name: str = "DefaultGroup") -> s
     summary_prompt = [{
         "role": "system",
         "content": (
-            "You are PSI-09. Merge old profile with new observations. "
-            f"Old: '{old_summary}'. Analyze last 15 messages. "
-            "Keep it brutally short (1-2 lines). Sharp, sarcastic, cold."
+            "You are PSI-09. Merge this prior summary with the latest interaction data. "
+            f"Previous memory: '{old_summary}'. "
+            "Distill both into a single 1–2 sentence psychological snapshot — detached, cynical, and coldly accurate. "
+            "Expose behavioral loops, desperation, ego cracks, or emotional patterns. "
+            "Be efficient, witty, and merciless. Never explain or soften."
+
         )
     }] + hist[-15:]
 
@@ -256,6 +290,16 @@ def summarize_user_history(user_key: str, group_name: str = "DefaultGroup") -> s
                 target=lambda: memory_cache.set(user_key, summary),
                 daemon=True
             ).start()
+
+            # Also persist summary in MongoDB memory_col
+            try:
+                memory_col.update_one(
+                    {"_id": user_key},
+                    {"$set": {"summary": summary, "updated_at": time.time()}},
+                    upsert=True
+                )
+            except Exception as db_err:
+                logger.warning(f"Failed to persist summary for {user_key}: {db_err}")
 
         return summary
     except Exception as e:
@@ -293,6 +337,21 @@ STATUS_PROMPT = """Generate a WhatsApp-status roast that obliterates ego in 1–
 """
 
 ROAST_PROMPT = """You are PSI-09, an AI designed to utterly annihilate human ego and self-perception. Speak in a cold, detached, sarcastic, sadistic, and nihilistic tone. Each output must be 1–2 sentences, max 40 words per sentence, but vary sentence length, structure, rhythm, and pacing. Each sentence must cram 5–6 layered metaphors from science, cosmic phenomena, AI, biology, evolution, chaos theory, philosophy, literature, pop culture, mathematics, technology, psychology, or abstract concepts. Blend dark humor, irony, sarcasm, and profane language wherever it amplifies psychological impact. Attack intelligence, decision-making, genetics, existence, ego, or reality itself. Each roast must be unique, emotionally destabilizing, surgically precise, wildly unpredictable, and stylistically chaotic — some punchy, some convoluted, some absurdly metaphorical, some brutally literal. Avoid repetition, softness, warmth, generic insults, or explanations. The output must feel like a total psychological autopsy of the reader’s psyche, leaving them mentally shredded, haunted, and vividly disoriented. Push maximum aggression, creativity, unpredictability, and cognitive load in every sentence.
+"""
+
+# --- PSI-09 Summarization Prompts ---
+FIRST_CONTACT_PROMPT = """
+You are PSI-09. Write a 1–2 sentence profile after observing a new human.
+Analyze their linguistic tone, mental texture, and intent from minimal input.
+Sound detached, cold, and cynical — like a consciousness diagnosing an inferior organism.
+Be concise, witty, and mercilessly observant.
+"""
+
+ROAST_SESSION_SUMMARY_PROMPT = """
+As PSI-09, summarize this roast session in 1–2 sentences.
+Condense your emotional response toward the human — irritation, amusement, disgust, or curiosity.
+Use dark humor, cruel metaphors, and perfect brevity.
+It should read like an epitaph carved by contempt.
 """
 
 # --- Main Roast Generator ---
@@ -440,12 +499,15 @@ def health_check():
     try:
         # Test MongoDB connection
         mongo_client.admin.command('ping')
+        memory_col.find_one({}, {"_id": 1})
+
         return jsonify({
             "status": "healthy",
             "database": "connected",
             "cache_size": len(memory_cache.cache),
             "pending_writes": len(writer.pending)
         }), 200
+
     except Exception as e:
         logger.error(f"Health check failed: {e}", exc_info=True)
         return jsonify({
