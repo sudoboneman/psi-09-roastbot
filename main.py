@@ -434,6 +434,25 @@ def psi09():
         logger.error(f"Error in /psi09: {e}", exc_info=True)
         return jsonify({"error": str(e), "type": type(e).__name__}), 500
 
+@app.route("/health", methods=["GET"])
+def health_check():
+    """Health check endpoint."""
+    try:
+        # Test MongoDB connection
+        mongo_client.admin.command('ping')
+        return jsonify({
+            "status": "healthy",
+            "database": "connected",
+            "cache_size": len(memory_cache.cache),
+            "pending_writes": len(writer.pending)
+        }), 200
+    except Exception as e:
+        logger.error(f"Health check failed: {e}", exc_info=True)
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e)
+        }), 503
+
 # --- Cleanup on Shutdown ---
 def cleanup():
     """Flush pending writes silently if Python process stops."""
