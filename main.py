@@ -1,3 +1,4 @@
+from liveliness import LivelinessEngine
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -67,6 +68,9 @@ app = Flask(__name__)
 app.config['PROPAGATE_EXCEPTIONS'] = True
 CORS(app)
 client = OpenAI(api_key=config.OPENAI_API_KEY)
+
+# ---- integrating liveliness engine ----
+liveliness = LivelinessEngine(db=db, logger=app.logger)
 
 try:
     ENCODING = tiktoken.encoding_for_model(config.MODEL)
@@ -437,6 +441,15 @@ def get_roast_response(user_message: str, group_name: str, sender_name: str) -> 
     if reply:
         writer.buffer_message(user_key, {"role": "assistant", "content": reply})
 
+    # Live state generation
+    try:
+        mood = liveliness.get_mood(user_key, user_message)
+        reply = liveliness.apply_mood(reply, mood)
+        liveliness.remember(user_key, reply)
+        app.logger.info(f"[Liveliness] Mood={mood} | Personality={liveliness.personality_state}")
+    except Exception as e:
+        app.logger.warning(f"Liveliness failed: {e}")
+
     # Clean up mode tags from reply
     clean = re.sub(r'\[.*?MODE.*?\]', '', reply)
     clean = re.sub(r'\(.*?Flame.*?\)', '', clean)
@@ -504,26 +517,20 @@ def psi09():
         return jsonify({"error": str(e), "type": type(e).__name__}), 500
 
 @app.route("/health", methods=["GET"])
-def health_check():
-    """Health check endpoint."""
+def health():
     try:
-        # Test MongoDB connection
-        mongo_client.admin.command('ping')
-        memory_col.find_one({}, {"_id": 1})
-
+        db.admin.command("ping")
+        _ = liveliness.get_mood("system", f"heartbeat-{time.time()}")
         return jsonify({
-            "status": "healthy",
-            "database": "connected",
-            "cache_size": len(memory_cache.cache),
-            "pending_writes": len(writer.pending)
+            "status": "ok",
+            "time": datetime.now(timezone.utc).isoformat(),
+            "personality": liveliness.personality_state,
+            "mood_cache": len(liveliness.last_moods),
+            "memory_cache": len(liveliness.memory)
         }), 200
-
     except Exception as e:
-        logger.error(f"Health check failed: {e}", exc_info=True)
-        return jsonify({
-            "status": "unhealthy",
-            "error": str(e)
-        }), 503
+        app.logger.warning(f"Health check failed: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # --- Cleanup on Shutdown ---
 def cleanup():
