@@ -261,12 +261,27 @@ def psi09():
 @app.route("/health", methods=["GET"])
 def health():
     try:
-        mongo_client.admin.command("ping")           # quick ping
-        _ = memory_col.find_one({}, {"_id": 1})      # quick read
-        return jsonify({...}), 200
+        # Ping MongoDB to ensure connection is alive
+        mongo_client.admin.command("ping")
+
+        # Optional: check liveliness state if you want
+        mood_cache_size = len(liveliness.last_moods) if hasattr(liveliness, "last_moods") else 0
+        memory_cache_size = len(liveliness.memory) if hasattr(liveliness, "memory") else 0
+
+        return jsonify({
+            "status": "ok",
+            "time": datetime.now(timezone.utc).isoformat(),
+            "personality": getattr(liveliness, "personality_state", "unknown"),
+            "mood_cache_count": mood_cache_size,
+            "memory_cache_count": memory_cache_size
+        }), 200
+
     except Exception as e:
-        logger.exception("Health check failed")
-        return jsonify({"status":"unhealthy","error":str(e)}), 503
+        # Return the error as a string to avoid serialization issues
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
 
 # --- Run Server ---
 if __name__=="__main__":
