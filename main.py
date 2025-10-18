@@ -258,14 +258,15 @@ def psi09():
     response=get_roast_response(user_message,group_name or "DefaultGroup",sender_name)
     return jsonify({"reply":response or ""}),200
 
-@app.route("/health",methods=["GET"])
+@app.route("/health", methods=["GET"])
 def health():
-    try: db.admin.command("ping"); _=liveliness.get_mood("system",f"heartbeat-{time.time()}"); return jsonify({"status":"ok","time":datetime.now(timezone.utc).isoformat(),"personality":liveliness.personality_state,"mood_cache":len(liveliness.last_moods),"memory_cache":len(liveliness.memory)}),200
-    except Exception as e: return jsonify({"status":"error","message":str(e)}),500
-
-# --- Cleanup ---
-def cleanup(): writer.stop(); mongo_client.close(); liveliness.shutdown(); logger.info("PSI-09 shutdown complete")
-atexit.register(cleanup)
+    try:
+        mongo_client.admin.command("ping")           # quick ping
+        _ = memory_col.find_one({}, {"_id": 1})      # quick read
+        return jsonify({...}), 200
+    except Exception as e:
+        logger.exception("Health check failed")
+        return jsonify({"status":"unhealthy","error":str(e)}), 503
 
 # --- Run Server ---
 if __name__=="__main__":
