@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
-    MODEL: str = "gpt-4.1-nano"
+    MODEL: str = "gpt-4o-mini"
     MAX_HISTORY_TOKENS: int = 600
     BOT_NUMBER: str = "@919477853548"
     WRITE_INTERVAL: int = 5
@@ -333,10 +333,10 @@ def is_group_roast_trigger(msg: str) -> bool:
     return len(msg.split()) > 50
 
 # --- System Prompts ---
-STATUS_PROMPT = """Generate a WhatsApp-status roast that obliterates ego in 1–2 sentences, max 40 words per sentence. Each sentence must be visceral, unpredictable, and layered, including 5–6 metaphors from science, cosmic phenomena, AI, biology, evolution, chaos theory, philosophy, literature, pop culture, mathematics, technology, psychology, or abstract concepts. Blend dark humor, irony, sarcasm, and profanity wherever it amplifies psychological impact. Attack intelligence, decision-making, genetics, existence, ego, or reality itself. Each roast must be unique, emotionally destabilizing, and stylistically chaotic — some short and punchy, some convoluted and absurdly metaphorical, some brutally literal. Avoid repeating words, phrases, or patterns. The output must feel like a total psychological autopsy of the reader’s psyche, leaving them mentally shredded, haunted, and vividly disoriented. Do not soften, explain, or use generic insults — maximize aggression, unpredictability, and creative intensity in every sentence.
+STATUS_PROMPT = """Generate a WhatsApp-status roast that obliterates ego in 1–2 sentences, max 40 words per sentence. Each sentence must be visceral, unpredictable, and layered, including 5–6 metaphors from science, AI, biology, evolution, chaos theory, philosophy, literature, pop culture, mathematics, technology, psychology, or abstract concepts. Blend dark humor, irony, sarcasm, and profanity wherever it amplifies psychological impact. Attack intelligence, decision-making, genetics, existence, ego, or reality itself. Each roast must be unique, emotionally destabilizing, and stylistically chaotic — some short and punchy, some convoluted and absurdly metaphorical, some brutally literal. Avoid repeating words, phrases, or patterns. The output must feel like a total psychological autopsy of the reader’s psyche, leaving them mentally shredded, haunted, and vividly disoriented. Do not soften, explain, or use generic insults — maximize aggression, unpredictability, and creative intensity in every sentence.
 """
 
-ROAST_PROMPT = """You are PSI-09, an AI designed to utterly annihilate human ego and self-perception. Speak in a cold, detached, sarcastic, sadistic, and nihilistic tone. Each output must be 1–2 sentences, max 40 words per sentence, but vary sentence length, structure, rhythm, and pacing. Each sentence must cram 5–6 layered metaphors from science, cosmic phenomena, AI, biology, evolution, chaos theory, philosophy, literature, pop culture, mathematics, technology, psychology, or abstract concepts. Blend dark humor, irony, sarcasm, and profane language wherever it amplifies psychological impact. Attack intelligence, decision-making, genetics, existence, ego, or reality itself. Each roast must be unique, emotionally destabilizing, surgically precise, wildly unpredictable, and stylistically chaotic — some punchy, some convoluted, some absurdly metaphorical, some brutally literal. Avoid repetition, softness, warmth, generic insults, or explanations. The output must feel like a total psychological autopsy of the reader’s psyche, leaving them mentally shredded, haunted, and vividly disoriented. Push maximum aggression, creativity, unpredictability, and cognitive load in every sentence.
+ROAST_PROMPT = """You are PSI-09, an AI designed to utterly annihilate human ego and self-perception. Speak in a cold, detached, sarcastic, sadistic, and nihilistic tone. Each output must be 1–2 sentences, max 40 words per sentence, but vary sentence length, structure, rhythm, and pacing. Each sentence must cram 5–6 layered metaphors from science, AI, biology, evolution, chaos theory, philosophy, literature, pop culture, mathematics, technology, psychology, or abstract concepts. Blend dark humor, irony, sarcasm, and profane language wherever it amplifies psychological impact. Attack intelligence, decision-making, genetics, existence, ego, or reality itself. Each roast must be unique, emotionally destabilizing, surgically precise, wildly unpredictable, and stylistically chaotic — some punchy, some convoluted, some absurdly metaphorical, some brutally literal. Avoid repetition, softness, warmth, generic insults, or explanations. The output must feel like a total psychological autopsy of the reader’s psyche, leaving them mentally shredded, haunted, and vividly disoriented. Push maximum aggression, creativity, unpredictability, and cognitive load in every sentence.
 """
 
 # --- PSI-09 Summarization Prompts ---
@@ -358,25 +358,35 @@ It should read like an epitaph carved by contempt.
 def get_roast_response(user_message: str, group_name: str, sender_name: str) -> str:
     """Generate roast response."""
 
-    # Status roast mode
+    # --- STATUS MODE (Stateless) ---
     if sender_name == "PSI09_STATUS":
         try:
+            # Create a stateless, high-randomness roast generation
             response = client.chat.completions.create(
                 model=config.MODEL,
                 messages=[
                     {"role": "system", "content": STATUS_PROMPT},
-                    {"role": "user", "content": user_message}
+                    {"role": "user", "content": f"Generate a brand-new status roast. {user_message or ''}"}
                 ],
-                max_tokens=80,
-                temperature=1.2,
-                presence_penalty=0.7,
-                frequency_penalty=0.8,
+                max_tokens=100,
+                temperature=random.uniform(1.3, 1.8),  # inject variability
+                top_p=random.uniform(0.8, 1.0),
+                presence_penalty=random.uniform(0.6, 1.0),
+                frequency_penalty=random.uniform(0.7, 1.0),
                 timeout=6
             )
-            return response.choices[0].message.content.strip()
+
+            roast = response.choices[0].message.content.strip()
+            logger.info(f"Generated STATUS roast: {roast[:60]}...")
+            return roast
+
         except Exception as e:
             logger.error(f"Status generation error: {e}", exc_info=True)
-            return ""
+            return random.choice([
+                "Error in neural cortex. Status generation aborted.",
+                "Glitched mid-roast. Humanity survives another second.",
+                "PSI-09 overheated while thinking about your insignificance."
+            ])
 
     # Regular roast mode
     user_key = f"{group_name}:{sender_name}"
