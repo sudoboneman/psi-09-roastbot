@@ -100,7 +100,7 @@ class LivelinessEngine:
         if text:
             mem = self.memory.get(user_key,"")
             self.memory[user_key] = (mem + " " + text)[-500:]
-            if self.db:
+            if self.db is not None:
                 try:
                     self.db["liveliness_memory"].update_one({"_id":user_key},{"$set":{"memory":self.memory[user_key],"updated_at":time.time()}},upsert=True)
                 except Exception as e:
