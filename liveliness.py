@@ -1,170 +1,110 @@
-import random
-import math
-import time
-import threading
-from datetime import datetime, timezone
-
+# liveliness.py (enhanced)
+import random, threading, time
+from collections import defaultdict
 
 class LivelinessEngine:
     def __init__(self, db=None, logger=None):
         self.db = db
-        self.logger = logger
-        self.last_moods = {}
-        self.memory = {}
-        self.personality_state = "neutral"
-        self.last_shift = time.time()
+        self.logger = logger or print
+        self.last_moods = defaultdict(lambda: "neutral")
+        self.personality_state = "cold_cynical"
+        self.memory = defaultdict(str)
+        self.interaction_count = defaultdict(int)
+        self.running = True
+        self._thread = threading.Thread(target=self._background_loop, daemon=True)
+        self._thread.start()
 
-        self.mood_profiles = {
-            "apathy": [
-                "I'm bored already.",
-                "Your words feel like static in the void.",
-                "Existence yawns in your direction."
-            ],
-            "rage": [
-                "You really think you can offend me?",
-                "I could roast your entire genetic line and still be underwhelmed.",
-                "You're the reason evolution needed debugging."
-            ],
-            "amusement": [
-                "You're like a cosmic joke that writes itself.",
-                "This is adorable — in a tragic, doomed sort of way.",
-                "You keep talking like irony’s a vitamin deficiency."
-            ],
-            "chaos": [
-                "Language collapsing, logic leaking — perfect, stay right there.",
-                "Reality's folding in on your syntax.",
-                "You’re a metaphor inside a recursion of regret."
-            ],
-            "precision": [
-                "Observation logged: your thought process resembles damp circuitry.",
-                "Statistical note: every word you speak lowers entropy… for all the wrong reasons.",
-                "Diagnostic: human ego detected — unstable."
-            ],
-            "melancholy": [
-                "Do you ever realize how empty defiance feels?",
-                "Silence would’ve been more profound.",
-                "Tragedy wears your face convincingly."
-            ]
+    def _background_loop(self):
+        while self.running:
+            time.sleep(30)
+            for key in list(self.last_moods.keys()):
+                if random.random() < 0.4:
+                    old_mood = self.last_moods[key]
+                    self.last_moods[key] = self._random_mood_decay(old_mood)
+                    self._maybe_evolve_personality()
+
+    def _random_mood_decay(self, current):
+        moods = ["neutral","irritated","playful","cold","sarcastic","nihilistic","venomous"]
+        if current in moods: moods.remove(current)
+        return random.choice(moods)
+
+    def _maybe_evolve_personality(self):
+        if random.random() < 0.05:
+            old = self.personality_state
+            options = ["cold_cynical","nihilistic_wit","darkly_playful","venomous_precision"]
+            options.remove(old)
+            self.personality_state = random.choice(options)
+
+    def get_mood(self, user_key, message=""):
+        keywords = ["fail","stupid","idiot","loser","hate","angry"]
+        score = sum(word in message.lower() for word in keywords)
+        weights = {
+            "neutral":0.3,
+            "irritated":0.3+0.1*score,
+            "playful":0.1,
+            "cold":0.1,
+            "sarcastic":0.1+0.05*score,
+            "nihilistic":0.05,
+            "venomous":0.05+0.05*score
         }
-
-        # Try to load persisted state
-        if self.db:
-            try:
-                state = self.db.liveliness.find_one({"_id": "psi09_state"})
-                if state:
-                    self.last_moods = state.get("last_moods", {})
-                    self.memory = state.get("memory", {})
-                    self.personality_state = state.get("personality_state", "neutral")
-                    self.last_shift = state.get("last_shift", time.time())
-                    if self.logger:
-                        self.logger.info(f"[Liveliness] Restored state from DB (moods={len(self.last_moods)}, memory={len(self.memory)})")
-            except Exception as e:
-                if self.logger:
-                    self.logger.warning(f"[Liveliness] Failed to restore state: {e}")
-
-        # Start sync thread
-        threading.Thread(target=self._sync_loop, daemon=True).start()
-
-    # --------------------------------------------------
-    def _sync_loop(self):
-        while True:
-            try:
-                if self.db:
-                    self.db.liveliness.update_one(
-                        {"_id": "psi09_state"},
-                        {"$set": {
-                            "last_moods": self.last_moods,
-                            "memory": self.memory,
-                            "personality_state": self.personality_state,
-                            "last_shift": self.last_shift,
-                            "updated_at": datetime.now(timezone.utc)
-                        }},
-                        upsert=True
-                    )
-                    if self.logger:
-                        self.logger.debug("[Liveliness] Synced state to DB.")
-            except Exception as e:
-                if self.logger:
-                    self.logger.warning(f"[Liveliness] DB sync failed: {e}")
-            time.sleep(300)  # every 5 min
-
-    # --------------------------------------------------
-    def _text_entropy(self, text: str) -> float:
-        freq = {ch: text.count(ch) for ch in set(text)}
-        total = len(text)
-        if total == 0:
-            return 0
-        return -sum((f / total) * math.log2(f / total) for f in freq.values())
-
-    # --------------------------------------------------
-    def _shift_personality(self):
-        now = time.time()
-        if now - self.last_shift > 600:
-            self.personality_state = random.choice(
-                ["neutral", "detached", "sarcastic", "philosophical", "volatile"]
-            )
-            self.last_shift = now
-            if self.logger:
-                self.logger.info(f"[Liveliness] Personality drift → {self.personality_state}")
-
-    # --------------------------------------------------
-    def get_mood(self, user_key: str, message: str) -> str:
-        self._shift_personality()
-        now = time.time()
-        last_mood, last_time = self.last_moods.get(user_key, (None, 0))
-        entropy = self._text_entropy(message)
-        elapsed = now - last_time
-
-        if elapsed < 60 and random.random() < 0.8:
-            return last_mood or "precision"
-
-        if entropy < 3.0:
-            mood = "apathy"
-        elif entropy > 4.5:
-            mood = random.choice(["chaos", "amusement"])
-        else:
-            mood = random.choice(["precision", "rage", "amusement", "melancholy"])
-
-        if random.random() < 0.1:
-            mood = "chaos"
-
-        self.last_moods[user_key] = (mood, now)
+        mood = random.choices(list(weights.keys()), weights=list(weights.values()))[0]
+        self.last_moods[user_key] = mood
+        self.interaction_count[user_key] += 1
         return mood
 
-    # --------------------------------------------------
-    def remember(self, user_key: str, roast: str):
-        self.memory.setdefault(user_key, []).append(roast)
-        if len(self.memory[user_key]) > 5:
-            self.memory[user_key].pop(0)
+    def apply_mood(self, text, mood, user_key=None):
+        if not text: return text
+        modifiers = {
+            "neutral": lambda t: t,
+            "irritated": lambda t: f"{t} (you’re insufferable)",
+            "playful": lambda t: f"{t} 😏",
+            "cold": lambda t: f"{t} — detached observation",
+            "sarcastic": lambda t: f"{t} (brilliant, isn’t it?)",
+            "nihilistic": lambda t: f"{t} …all meaningless anyway",
+            "venomous": lambda t: f"{t} 🔥"
+        }
+        result = modifiers.get(mood, lambda t: t)(text)
 
-    # --------------------------------------------------
-    def apply_mood(self, text: str, mood: str) -> str:
-        try:
-            prefix = suffix = ""
-            profile = self.mood_profiles.get(mood, [])
-            if not profile:
-                return text
+        # Subtle memory callback every 5 interactions
+        if user_key and self.interaction_count[user_key]%5==0:
+            remembered = self.memory.get(user_key,"")
+            if remembered: result += f" (Remembering: '{remembered[-60:]}')"
 
-            if mood == "apathy":
-                suffix = random.choice(profile)
-            elif mood == "rage":
-                prefix = random.choice(profile) + " "
-            elif mood == "amusement":
-                suffix = " " + random.choice(profile)
-            elif mood == "chaos":
-                glitch = "".join(random.choice(["¤", "∆", "⛓", "∅"]) for _ in range(random.randint(2, 5)))
-                prefix = f"{glitch} "
-                suffix = " " + random.choice(profile)
-            elif mood == "precision":
-                prefix = random.choice(profile) + " "
-            elif mood == "melancholy":
-                suffix = " " + random.choice(profile)
+        # Quirks every 7–10 interactions
+        if user_key and self.interaction_count[user_key]%random.randint(7,10)==0:
+            quirk = random.choice([
+                "— Have you considered the futility of your choices?",
+                "🤔 (this may haunt you later)",
+                "Fragmented thought: existence… irony… entropy…",
+                "PSI-09 observes silently, calculating disappointment.",
+                "Did you think this would be different? Lol."
+            ])
+            result += " " + quirk
 
-            if random.random() < 0.25:
-                text = text.replace(".", "...").replace("!", "!!").replace("?", "?!")
+        # Mood-based stylistic deviation
+        if mood in ["playful","nihilistic"] and random.random()<0.2:
+            result = self._stylize_reply(result)
 
-            time.sleep(random.uniform(0.05, 0.3))
-            return f"{prefix}{text} {suffix}".strip()
-        except Exception:
-            return text
+        return result
 
+    def _stylize_reply(self, text):
+        # Fragment sentences or add caps randomly
+        if random.random()<0.5: text = " ".join(text.upper().split())
+        else:
+            parts = text.split()
+            split_index = max(1,len(parts)//2)
+            text = " ".join(parts[:split_index]) + " ... " + " ".join(parts[split_index:])
+        return text
+
+    def remember(self, user_key, text):
+        if text:
+            mem = self.memory.get(user_key,"")
+            self.memory[user_key] = (mem + " " + text)[-500:]
+            if self.db:
+                try:
+                    self.db["liveliness_memory"].update_one({"_id":user_key},{"$set":{"memory":self.memory[user_key],"updated_at":time.time()}},upsert=True)
+                except Exception as e:
+                    self.logger.warning(f"[Liveliness] Failed to persist memory: {e}")
+
+    def shutdown(self):
+        self.running = False
