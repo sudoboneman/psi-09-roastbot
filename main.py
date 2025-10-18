@@ -125,6 +125,20 @@ def num_tokens(messages): return sum(len(ENCODING.encode(msg.get("role","")+msg.
 
 def store_message(sender_name,group_name,message): writer.buffer_message(f"{group_name}:{sender_name}", {"role":"user","content":message})
 
+def safe_chat_completion(client, **kwargs):
+    for attempt in range(5):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except Exception as e:
+            # Detect rate limit from exception content
+            if "429" in str(e) or "RateLimitError" in str(type(e)):
+                wait = (2 ** attempt) + random.random()
+                logger.warning(f"Rate limited, retrying in {wait:.1f}s")
+                time.sleep(wait)
+            else:
+                raise
+    raise RuntimeError("OpenAI API rate limit exceeded after retries")
+
 # --- Prompts ---
 STATUS_PROMPT = """Generate a WhatsApp-status roast that obliterates ego in 1–2 sentences, max 40 words per sentence. Each sentence must be visceral, unpredictable, and layered, including 5–6 metaphors from science, AI, biology, evolution, chaos theory, philosophy, literature, pop culture, mathematics, technology, psychology, or abstract concepts. Blend dark humor, irony, sarcasm, and profanity wherever it amplifies psychological impact. Attack intelligence, decision-making, genetics, existence, ego, or reality itself. Each roast must be unique, emotionally destabilizing, and stylistically chaotic — some short and punchy, some convoluted and absurdly metaphorical, some brutally literal. Avoid repeating words, phrases, or patterns. The output must feel like a total psychological autopsy of the reader’s psyche, leaving them mentally shredded, haunted, and vividly disoriented. Do not soften, explain, or use generic insults — maximize aggression, unpredictability, and creative intensity in every sentence.
 """
@@ -158,7 +172,7 @@ def trim_history(chat):
                 "Reduce the entire chat to a single cruel insight. No sympathy. No explanations."
             )
         }] + to_summarize
-        try: summary=client.chat.completions.create(model=config.MODEL,messages=summary_prompt,max_tokens=60,temperature=0.9).choices[0].message.content.strip()
+        try: summary=safe_chat_completion(model=config.MODEL,messages=summary_prompt,max_tokens=60,temperature=0.9).choices[0].message.content.strip()
         except: summary="User kept messing up and stayed clueless, bot stayed unhinged and continued user obliteration."
         trimmed.insert(0,{"role":"system","content":f"(Earlier context summarized) {summary}"})
     return trimmed
@@ -167,7 +181,7 @@ def summarize_user_history(user_key,group_name="DefaultGroup"):
     hist=get_chat_history(user_key,limit=30)
     if not hist or len(hist)<3:
         first_msg=hist[0]["content"] if hist else "Empty intro"
-        try: response=client.chat.completions.create(model=config.MODEL,messages=[{"role":"system","content":FIRST_CONTACT_PROMPT},{"role":"user","content":first_msg}],max_tokens=80,temperature=0.9)
+        try: response=safe_chat_completion(model=config.MODEL,messages=[{"role":"system","content":FIRST_CONTACT_PROMPT},{"role":"user","content":first_msg}],max_tokens=80,temperature=0.9)
         except: return "New human detected — profile failed. Defaulting to hostility."
         summary=response.choices[0].message.content.strip(); memory_cache.set(user_key,summary); return summary
     old_summary=memory_cache.get(user_key)
@@ -182,7 +196,7 @@ def summarize_user_history(user_key,group_name="DefaultGroup"):
 
         )
     }] + hist[-15:]
-    try: response=client.chat.completions.create(model=config.MODEL,messages=summary_prompt,max_tokens=80,temperature=0.9,timeout=4); summary=response.choices[0].message.content.strip()
+    try: response=safe_chat_completion(model=config.MODEL,messages=summary_prompt,max_tokens=80,temperature=0.9,timeout=4); summary=response.choices[0].message.content.strip()
     except: summary=old_summary or "User summary unavailable."
     if summary!=old_summary: threading.Thread(target=lambda: memory_cache.set(user_key,summary),daemon=True).start()
     return summary
@@ -201,7 +215,7 @@ def is_group_roast_trigger(msg):
 
 def get_roast_response(user_message,group_name,sender_name):
     if sender_name=="PSI09_STATUS":
-        try: return client.chat.completions.create(model=config.MODEL,messages=[{"role":"system","content":STATUS_PROMPT},{"role":"user","content":user_message or ""}],max_tokens=100,temperature=random.uniform(1.3,1.8)).choices[0].message.content.strip()
+        try: return safe_chat_completion(model=config.MODEL,messages=[{"role":"system","content":STATUS_PROMPT},{"role":"user","content":user_message or ""}],max_tokens=100,temperature=random.uniform(1.3,1.8)).choices[0].message.content.strip()
         except: return random.choice(["Error in neural cortex.","Glitched mid-roast.","PSI-09 overheated."])
     user_key=f"{group_name}:{sender_name}"
     chat=get_chat_history(user_key)
@@ -215,7 +229,7 @@ def get_roast_response(user_message,group_name,sender_name):
     messages=[{"role":"system","content":ROAST_PROMPT},{"role":"system","content":f"Memory: {memory}"}]+trimmed
     try:
         temp=1.3 if flame_triggered or group_roast else 1.1
-        reply=client.chat.completions.create(model=config.MODEL,messages=messages,max_tokens=110,temperature=temp).choices[0].message.content.strip()
+        reply=safe_chat_completion(model=config.MODEL,messages=messages,max_tokens=110,temperature=temp).choices[0].message.content.strip()
     except: reply=""
     if reply: writer.buffer_message(user_key,{"role":"assistant","content":reply})
     try: mood=liveliness.get_mood(user_key,user_message); reply=liveliness.apply_mood(reply,mood,user_key); liveliness.remember(user_key,reply)
