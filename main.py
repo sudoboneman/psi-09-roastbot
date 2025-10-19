@@ -240,12 +240,12 @@ def get_roast_response(user_message,group_name,sender_name):
     if reply: writer.buffer_message(user_key,{"role":"assistant","content":reply})
 
     try:
-    mood = liveliness.get_mood(user_key, user_message)
-    reply = liveliness.apply_mood(reply, mood, user_key)
-    liveliness.remember(user_key, user_message)
-    liveliness.remember(user_key, reply)
+        mood = liveliness.get_mood(user_key, user_message)
+        reply = liveliness.apply_mood(reply, mood, user_key)
+        liveliness.remember(user_key, user_message)
+        liveliness.remember(user_key, reply)
     except Exception as e:
-    app.logger.exception(f"LivelinessEngine error: {e}")
+        app.logger.exception(f"LivelinessEngine error: {e}")
 
     clean=re.sub(r'\[.*?MODE.*?\]','',reply); clean=re.sub(r'\(.*?Flame.*?\)','',clean)
     return re.sub(r'\s{2,}',' ',clean).strip()
