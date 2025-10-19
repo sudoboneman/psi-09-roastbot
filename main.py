@@ -48,7 +48,7 @@ CORS(app)
 client = OpenAI(api_key=config.OPENAI_API_KEY)
 
 # --- Liveliness Engine ---
-liveliness = LivelinessEngine(db=db, logger=app.logger)
+liveliness = LivelinessEngine(db=db, logger=app.logger, enable_background=True, enable_self_talk=True, random_seed=None)
 
 # --- Token Encoding ---
 try: ENCODING = tiktoken.encoding_for_model(config.MODEL)
@@ -238,7 +238,9 @@ def get_roast_response(user_message,group_name,sender_name):
         reply=client.chat.completions.create(model=config.MODEL,messages=messages,max_tokens=110,temperature=temp).choices[0].message.content.strip()
     except: reply=""
     if reply: writer.buffer_message(user_key,{"role":"assistant","content":reply})
-    try: mood=liveliness.get_mood(user_key,user_message); reply=liveliness.apply_mood(reply,mood,user_key); liveliness.remember(user_key,reply)
+    try: mood=liveliness.get_mood(user_key,user_message); reply=liveliness.apply_mood(reply,mood,user_key);
+    liveliness.remember(user_key, user_message);
+    liveliness.remember(user_key,reply)
     except: pass
     clean=re.sub(r'\[.*?MODE.*?\]','',reply); clean=re.sub(r'\(.*?Flame.*?\)','',clean)
     return re.sub(r'\s{2,}',' ',clean).strip()
@@ -282,6 +284,12 @@ def health():
             "status": "error",
             "message": str(e)
         }), 500
+
+@atexit.register
+def shutdown_services():
+    writer.stop()
+    liveliness.shutdown()
+    mongo_client.close()
 
 # --- Run Server ---
 if __name__=="__main__":
