@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
-    MODEL: str = "gpt-4o-mini"
+    MODEL: str = "gpt-4.1-nano"
     MAX_HISTORY_TOKENS: int = 600
     BOT_NUMBER: str = "@919477853548"
     WRITE_INTERVAL: int = 5
