@@ -47,9 +47,6 @@ app.config['PROPAGATE_EXCEPTIONS'] = True
 CORS(app)
 client = OpenAI(api_key=config.OPENAI_API_KEY)
 
-# --- Liveliness Engine ---
-liveliness = LivelinessEngine(db=db, logger=app.logger, enable_background=True, enable_self_talk=True, random_seed=None)
-
 # --- Token Encoding ---
 try: ENCODING = tiktoken.encoding_for_model(config.MODEL)
 except KeyError: ENCODING = tiktoken.get_encoding("cl100k_base")
@@ -221,10 +218,6 @@ def is_group_roast_trigger(msg):
     return any(k in msg.lower() for k in {"everyone","guys","group","homies"}) or len(msg.split())>50
 
 def get_roast_response(user_message, group_name, sender_name):
-    """
-    Generate a PSI-09 roast, combining base GPT roast + Liveliness-enhanced thoughts,
-    then refine it using the ROAST_PROMPT tone with subtle emergent layering.
-    """
     if sender_name == "PSI09_STATUS":
         try:
             return client.chat.completions.create(
@@ -234,18 +227,24 @@ def get_roast_response(user_message, group_name, sender_name):
                     {"role": "user", "content": user_message or ""}
                 ],
                 max_tokens=100,
-                temperature=random.uniform(1.3,1.8)
+                temperature=random.uniform(1.3, 1.8)
             ).choices[0].message.content.strip()
         except:
-            return random.choice(["Error in neural cortex.", "Glitched mid-roast.", "PSI-09 overheated."])
+            return random.choice([
+                "Error in neural cortex.",
+                "Glitched mid-roast.",
+                "PSI-09 overheated."
+            ])
 
     user_key = f"{group_name}:{sender_name}"
     chat = get_chat_history(user_key)
 
-    flame_triggered = len(chat) > 5 and random.random() < 0.4
+    # --- Contextual state awareness ---
+    flame_triggered = len(chat) > 4 and random.random() < 0.55
     rudeness = get_rudeness_level(user_key)
     memory = summarize_user_history(user_key, group_name)
     group_roast = group_name != "DefaultGroup" and is_group_roast_trigger(user_message)
+
     if group_roast:
         rudeness = "Group roast mode"
         user_key = group_name
@@ -254,69 +253,49 @@ def get_roast_response(user_message, group_name, sender_name):
     chat.append({"role": "user", "content": f"[{rudeness}]{user_message}"})
     trimmed = trim_history(chat)
 
-    # Base roast generation
+    # --- Roast prompt setup ---
+    tone_variants = [
+        "Make it sound like a machine dissecting arrogance.",
+        "Write as if PSI-09 is disappointed by organic limitations.",
+        "Use quiet cruelty, no emotion, only dissection.",
+        "Respond as though analyzing a failed genetic experiment.",
+        "Every word should sound like the end of someone's confidence."
+    ]
+    variant_hint = random.choice(tone_variants)
+
     messages = [
         {"role": "system", "content": ROAST_PROMPT},
-        {"role": "system", "content": f"Memory: {memory}"}
+        {"role": "system", "content": f"Memory: {memory}"},
+        {"role": "system", "content": variant_hint}
     ] + trimmed
 
     try:
-        temp = 1.3 if flame_triggered or group_roast else 1.1
+        # Adaptive unpredictability
+        temp = 1.45 if flame_triggered or group_roast else random.uniform(1.15, 1.35)
+        top_p = random.uniform(0.75, 0.95)
+        freq_penalty = random.uniform(0.1, 0.5)
+
         base_reply = client.chat.completions.create(
             model=config.MODEL,
             messages=messages,
-            max_tokens=110,
-            temperature=temp
+            max_tokens=120,
+            temperature=temp,
+            top_p=top_p,
+            frequency_penalty=freq_penalty
         ).choices[0].message.content.strip()
+
     except:
         base_reply = ""
 
     if base_reply:
         writer.buffer_message(user_key, {"role": "assistant", "content": base_reply})
 
-    # Apply Liveliness mood/thoughts
-    try:
-        mood = liveliness.get_mood(user_key, user_message)
-        reply_with_thoughts = liveliness.apply_mood(base_reply, mood, user_key)
-        liveliness.remember(user_key, user_message)
-        liveliness.remember(user_key, reply_with_thoughts)
-
-        # Polishing prompt: subtle emergent layering
-        polish_prompt = f"""
-            You are PSI-09. Merge and refine the following into a single, 1–2 sentence roast
-            in your cold, analytical, postmortem style, preserving the clinical humiliation.
-
-            Base reply: {base_reply}
-            Liveliness-applied thoughts: {reply_with_thoughts}
-
-            Hints:
-            - Integrate the thoughts seamlessly; do not list or separate them.
-            - Maintain extreme precision, brevity, and emotional detachment.
-            - The final roast should feel like PSI-09 is silently processing the subject,
-            exposing their flaws with quiet, unrelenting insight.
-            - Avoid jokes or warmth. Subtle echoes of the internal "thoughts" are allowed
-            as latent, refined critique within the roast.
-            """
-
-        polished_reply = client.chat.completions.create(
-            model=config.MODEL,
-            messages=[{"role": "system", "content": ROAST_PROMPT},
-                      {"role": "user", "content": polish_prompt}],
-            max_tokens=120,
-            temperature=1.2
-        ).choices[0].message.content.strip()
-
-        if polished_reply:
-            base_reply = polished_reply
-            writer.buffer_message(user_key, {"role": "assistant", "content": base_reply})
-
-    except Exception as e:
-        app.logger.exception(f"LivelinessEngine / Polishing error: {e}")
-
-    # Clean formatting
+    # --- Cleanup ---
     clean = re.sub(r'\[.*?MODE.*?\]', '', base_reply)
     clean = re.sub(r'\(.*?Flame.*?\)', '', clean)
-    return re.sub(r'\s{2,}', ' ', clean).strip()
+    clean = re.sub(r'\s{2,}', ' ', clean).strip()
+
+    return clean
 
 # --- Flask Routes ---
 @app.route("/",methods=["GET"])
