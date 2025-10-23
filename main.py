@@ -328,7 +328,7 @@ def get_roast_response(user_message, group_name, sender_name):
 # --- Flask Routes ---
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "running", "bot": "PSI-09-ROASTBOT", "version": "2.0-lively"}), 200
+    return jsonify({"status": "ok"}), 200
 
 @app.route("/psi09", methods=["POST"])
 def psi09():
@@ -354,7 +354,7 @@ def psi09():
 def health():
     try:
         mongo_client.admin.command("ping")
-        return jsonify({"status": "ok", "time": datetime.now(timezone.utc).isoformat()}), 200
+        return jsonify({"status": "ok"}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
