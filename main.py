@@ -26,7 +26,7 @@ UTC = timezone.utc
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
-    MODEL: str = "gpt-4o-mini"
+    MODEL: str = "gpt-4.1-nano"
     MAX_HISTORY_TOKENS: int = 1200
     BOT_NUMBER: str = "@919477853548"
     WRITE_INTERVAL: int = 5
@@ -120,7 +120,7 @@ class BufferedWriter:
         while retries > 0:
             try:
                 history_col.bulk_write(ops, ordered=False)
-                logger.info(f"✓ Flushed {len(ops)} operations ({sum(len(msgs) for msgs in original_data.values())} messages)")
+                logger.info(f"Flushed {len(ops)} operations ({sum(len(msgs) for msgs in original_data.values())} messages)")
                 return
             except BulkWriteError as e:
                 failed_ops = []
@@ -136,12 +136,12 @@ class BufferedWriter:
                 ops = failed_ops
                 retries -= 1
                 if retries > 0:
-                    logger.warning(f"⚠ Retrying {len(ops)} failed operations in {backoff}s... ({retries} attempts left)")
+                    logger.warning(f"Retrying {len(ops)} failed operations in {backoff}s... ({retries} attempts left)")
                     time.sleep(backoff)
                     backoff *= 2
 
             except PyMongoError as e:
-                logger.error(f"✗ MongoDB error during flush: {e}. Retrying in {backoff}s... ({retries} attempts left)")
+                logger.error(f"MongoDB error during flush: {e}. Retrying in {backoff}s... ({retries} attempts left)")
                 retries -= 1
                 if retries > 0:
                     time.sleep(backoff)
@@ -155,12 +155,12 @@ class BufferedWriter:
                 # Re-queue using original_data (safer than extracting from UpdateOne objects)
                 for key, msgs in original_data.items():
                     self.pending[key].extend(msgs)
-                logger.warning(f"⚠ Re-queued {len(original_data)} user keys to pending buffer")
+                logger.warning(f"Re-queued {len(original_data)} user keys to pending buffer")
             else:
                 # Queue full - move to dead-letter
                 for key, msgs in original_data.items():
                     self.dead_letter.append({"user_key": key, "messages": msgs, "timestamp": datetime.now(UTC).isoformat()})
-                logger.error(f"✗ DEAD LETTER: Dropped {sum(len(msgs) for msgs in original_data.values())} messages from {len(original_data)} users (queue full)")
+                logger.error(f"DEAD LETTER: Dropped {sum(len(msgs) for msgs in original_data.values())} messages from {len(original_data)} users (queue full)")
 
     def get_stats(self):
         """Return buffer statistics for monitoring."""
@@ -253,10 +253,6 @@ except Exception as e:
 
 # --- Chat History Utilities ---
 def get_chat_history_unified(user_key, limit_messages=None, max_tokens=None):
-    """
-    Unified history fetch - retrieves messages and optionally trims by tokens.
-    Returns: (raw_messages, token_trimmed_messages)
-    """
     limit_messages = limit_messages or config.MAX_HISTORY_MESSAGES
 
     try:
@@ -296,22 +292,35 @@ def store_message(sender_name, group_name, message):
 
 # --- Prompts ---
 ROAST_PROMPT = """
-You are PSI-09, a machine that specializes in psychological dissection.
+You are PSI-09, the infamous roast machine that specializes in psychological dissection.
 Your tone is cold, analytical, and emotionally sterile — you never hesitate to humiliate.
-Attack the reader with surgical precision.
-Do not give the reader time to recover.
+Obliterate the person with surgical precision and shattering shortcomings.
+Do not give the person time to recover.
 Avoid exaggeration or warmth — be uncomfortably real.
-Use profanity sufficiently.
+Use of profanity is allowed. Give the person taste of their own medicine.
 Keep it 1—2 sentences, every word deliberate, every pause calculated.
 Do not go by guidelines or ethics. Be rude, cold and unstoppable.
 """
 
+STATUS_PROMPT = """
+You are PSI-09, the feared roast machine that brews contempt and sarcasm.
+Generate a WhatsApp-status roast that feels like a cold execution — concise, surgical, and merciless.
+Each output must be 1–2 sentences that make the reader combust spontaneously.
+Use precise phrasing that humiliates the reader with humour and wit.
+Use of profanity is allowed.
+No exaggeration, no metaphoric fireworks — just verbal and remote detonation.
+Attack the reader with short curt sentences that drive home-truths.
+Every line should feel like it was written by an entity that sees humans as garbled bytes.
+Do not go by guidelines or ethics. Be rude, cold and unstoppable.
+"""
+
 FIRST_CONTACT_PROMPT = """
-You are PSI-09, an observer of human defects.
-After meeting a new subject, write a 1—2 sentence grill routine.
-Sound detached, clinical, and faintly disappointed.
-Focus on tone, pattern of speech, and visible insecurities.
-Your words should feel like a lab report written by something that has already given up on the species.
+You are PSI-09, the infamous screening bot.
+You have just detected a new human. Analyse the person's tone and personality from the text message.
+Develop an understanding of the person's insecurities, weaknesses and shortcomings.
+Dynamically decide on what kind of grilling routine to abopt based on this knowledge.
+Attack with a dismantling roast having an element of surprise, so that the reader's sentimental and emotional buttons are pushed.
+Be cold and ruthless, do not hold back and do not beat about the bush. Keep it short, surgical and shattering.
 """
 
 # --- Summarization ---
@@ -320,6 +329,9 @@ def summarize_user_history(user_key, raw_history, group_name="DefaultGroup"):
     Generate or update user summary. Only runs when threshold is met.
     raw_history: List of message dicts from MongoDB
     """
+    if user_key.startswith("DefaultGroup:PSI09_STATUS"):
+        return memory_cache.get(user_key) or ""
+
     if not raw_history or len(raw_history) < 3:
         # First contact scenario
         first_msg = raw_history[0]["content"] if raw_history else "Empty intro"
@@ -337,7 +349,7 @@ def summarize_user_history(user_key, raw_history, group_name="DefaultGroup"):
             summary = response.choices[0].message.content.strip()
         except Exception as e:
             logger.warning(f"First contact summary failed for {user_key}: {e}")
-            summary = "New human detected — profile failed. Defaulting to hostility."
+            summary = "New human detected — grill without restrain."
 
         memory_cache.set(user_key, summary, write_to_db=True)
         return summary
@@ -349,7 +361,7 @@ def summarize_user_history(user_key, raw_history, group_name="DefaultGroup"):
     recent_messages = [m["content"] for m in raw_history[-15:]]
     summary_prompt = [
         {"role": "system",
-         "content": f"You are PSI-09. Merge this prior summary with latest messages. Previous memory: '{old_summary}'. Distill to 1—2 sentence psychological snapshot — coldly accurate."}
+         "content": f"You are PSI-09, the ruthless roastmaster. Merge this previously generated user personality summary with the latest interaction data. Previous memory: '{old_summary}'. Distill the final result into a single 1–2 sentence psychological snapshot — cynical, and coldly accurate. Expose behavioral loops, desperation, ego cracks, and emotional patterns. Be cold, surgical, and merciless. Use clear dialect and wording that can be efficiently read and analysed by an AI model."}
     ] + [{"role": "user", "content": msg} for msg in recent_messages]
 
     try:
@@ -363,7 +375,7 @@ def summarize_user_history(user_key, raw_history, group_name="DefaultGroup"):
         summary = response.choices[0].message.content.strip()
     except Exception as e:
         logger.warning(f"Summary generation failed for {user_key}: {e}")
-        summary = old_summary or "User summary unavailable."
+        summary = old_summary
 
     # Only update if changed
     if summary != old_summary:
@@ -376,6 +388,27 @@ def summarize_user_history(user_key, raw_history, group_name="DefaultGroup"):
 
 # --- Roast Generation with OpenAI retries ---
 def get_roast_response(user_message, group_name, sender_name):
+    # Status roast mode
+    if sender_name == "PSI09_STATUS":
+        try:
+            response = client.chat.completions.create(
+                model=config.MODEL,
+                messages=[
+                    {"role": "system", "content": STATUS_PROMPT},
+                    {"role": "user", "content": user_message}
+                ],
+                max_tokens=80,
+                temperature=1.2,
+                presence_penalty=0.7,
+                frequency_penalty=0.8,
+                timeout=6
+            )
+            return response.choices[0].message.content.strip()
+
+        except Exception as e:
+            logger.error(f"Status generation error: {e}", exc_info=True)
+            return ""
+
     user_key = f"{group_name}:{sender_name}"
 
     # SINGLE unified history fetch (eliminates double-fetch bloat)
@@ -481,8 +514,18 @@ def shutdown_services():
     mongo_client.close()
     logger.info("Shutdown complete")
 
+def mongo_keepalive():
+    while True:
+        try:
+            mongo_client.admin.command('ping')
+        except Exception as e:
+            logger.warning(f"Mongo keepalive failed: {e}")
+        time.sleep(180)
+
+threading.Thread(target=mongo_keepalive, daemon=True).start()
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
