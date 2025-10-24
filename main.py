@@ -358,7 +358,7 @@ def get_roast_response(user_message, group_name, sender_name):
     try:
         history_col.update_one(
             {"_id": user_key},
-            {"$push": {"messages": {"role": "assistant", "content": "test", "timestamp": datetime.now(UTC).isoformat()}}},
+            {"$push": {"messages": {"role": "assistant", "content": base_reply, "timestamp": datetime.now(UTC).isoformat()}}},
             upsert=True
         )
         logger.info("Mongo write OK")
