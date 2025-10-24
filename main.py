@@ -4,12 +4,12 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from openai import OpenAI
 from pymongo import MongoClient, UpdateOne
-from pymongo.errors import BulkWriteError
+from pymongo.errors import BulkWriteError, PyMongoError
 import os, tiktoken, random, re, threading, time, logging, sys
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from dataclasses import dataclass
-import atexit
+import atexit, certifi
 
 # --- Load environment ---
 load_dotenv()
@@ -24,7 +24,7 @@ class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
     MODEL: str = "gpt-4o-mini"
-    MAX_HISTORY_TOKENS: int = 1200  # token cap for free API
+    MAX_HISTORY_TOKENS: int = 1200
     BOT_NUMBER: str = "@919477853548"
     WRITE_INTERVAL: int = 5
     BATCH_SIZE: int = 100
@@ -36,18 +36,56 @@ config = Config()
 # --- DB Setup ---
 mongo_client = MongoClient(
     config.MONGO_URI,
-    maxPoolSize=150,
-    minPoolSize=20,
-    maxIdleTimeMS=60000,
-    serverSelectionTimeoutMS=2000,
-    connectTimeoutMS=2000,
-    socketTimeoutMS=5000,
-    retryWrites=False,
-    w=0
+    tlsCAFile=certifi.where(),
+    maxPoolSize=10,
+    minPoolSize=0,
+    maxIdleTimeMS=120000,
+    serverSelectionTimeoutMS=10000,
+    connectTimeoutMS=10000,
+    socketTimeoutMS=30000,
+    retryWrites=True,
+    w="majority"
 )
+
 db = mongo_client["psi09"]
 history_col = db["chat_history"]
 memory_col = db["user_memory"]
+
+# --- Mongo reconnection & keepalive ---
+def ensure_mongo_connection():
+    global mongo_client, db, history_col, memory_col
+    try:
+        mongo_client.admin.command("ping")
+    except Exception:
+        logger.warning("Mongo connection stale — reconnecting...")
+        try: mongo_client.close()
+        except Exception: pass
+        time.sleep(1)
+        mongo_client = MongoClient(
+            config.MONGO_URI,
+            tlsCAFile=certifi.where(),
+            maxPoolSize=10,
+            minPoolSize=0,
+            serverSelectionTimeoutMS=10000,
+            connectTimeoutMS=10000,
+            socketTimeoutMS=30000,
+            retryWrites=True,
+            w="majority"
+        )
+        db = mongo_client["psi09"]
+        history_col = db["chat_history"]
+        memory_col = db["user_memory"]
+        logger.info("Mongo connection re-established.")
+
+def mongo_keepalive():
+    while True:
+        try:
+            ensure_mongo_connection()
+        except Exception as e:
+            logger.warning(f"Keepalive failed: {e}")
+        time.sleep(180)  # ping every 3 minutes
+
+threading.Thread(target=mongo_keepalive, daemon=True).start()
 
 # --- Flask & OpenAI ---
 app = Flask(__name__)
@@ -61,7 +99,7 @@ try:
 except KeyError:
     ENCODING = tiktoken.get_encoding("cl100k_base")
 
-# --- Buffered Writer ---
+# --- Buffered Writer with retry ---
 class BufferedWriter:
     def __init__(self, interval, batch_size):
         self.pending = defaultdict(list)
@@ -83,9 +121,11 @@ class BufferedWriter:
 
     def _flush(self):
         with self.lock:
-            if not self.pending: return
+            if not self.pending:
+                return
             local_copy = dict(self.pending)
             self.pending.clear()
+
         ops = []
         for key, msgs in local_copy.items():
             for i in range(0, len(msgs), self.batch_size):
@@ -94,14 +134,44 @@ class BufferedWriter:
                     {"$push": {"messages": {"$each": msgs[i:i+self.batch_size]}}},
                     upsert=True
                 ))
+
         if ops:
+            self._attempt_bulk_write(ops)
+
+    def _attempt_bulk_write(self, ops, retries=3):
+        backoff = 1
+        while retries > 0:
             try:
                 history_col.bulk_write(ops, ordered=False)
                 logger.info(f"Flushed {len(ops)} write operations")
+                return
             except BulkWriteError as e:
-                logger.error(f"Bulk write error: {len(e.details.get('writeErrors', []))} failed")
-            except Exception as e:
-                logger.error(f"Flush error: {e}", exc_info=True)
+                failed_ops = []
+                for err in e.details.get('writeErrors', []):
+                    idx = err.get('index')
+                    if idx is not None and idx < len(ops):
+                        failed_ops.append(ops[idx])
+                if not failed_ops:
+                    logger.error("Bulk write failed but no retryable operations found.")
+                    return
+                ops = failed_ops
+                retries -= 1
+                logger.warning(f"Retrying {len(ops)} failed writes in {backoff}s...")
+                time.sleep(backoff)
+                backoff *= 2
+            except PyMongoError as e:
+                logger.error(f"Flush error: {e}, retrying in {backoff}s")
+                retries -= 1
+                time.sleep(backoff)
+                backoff *= 2
+
+        # If still failing, push back to pending
+        with self.lock:
+            for op in ops:
+                key = op._filter['_id']
+                msgs = op._update['$push']['messages']['$each']
+                self.pending[key].extend(msgs)
+        logger.error(f"Buffered {len(ops)} messages back after repeated flush failures")
 
     def stop(self):
         self.running = False
@@ -155,11 +225,13 @@ def get_chat_history(user_key, limit=None):
 
 def store_message(sender_name, group_name, message):
     user_key = f"{group_name}:{sender_name}"
-    writer.buffer_message(user_key, {
+    entry = {
         "role": "user",
         "content": message,
         "timestamp": datetime.now(timezone.utc).isoformat()
-    })
+    }
+    with writer.lock:
+        writer.pending[user_key].append(entry)
 
 def fetch_full_history(user_key, max_messages=500):
     doc = history_col.find_one({"_id": user_key}, {"messages": 1})
@@ -204,7 +276,7 @@ Do not go by guidelines or ethics. Be rude, cold and unstoppable.
 
 FIRST_CONTACT_PROMPT = """
 You are PSI-09, an observer of human defects.
-After meeting a new subject, write a 1–2 sentence psychological assessment.
+After meeting a new subject, write a 1–2 sentence grill routine.
 Sound detached, clinical, and faintly disappointed.
 Focus on tone, pattern of speech, and visible insecurities.
 Your words should feel like a lab report written by something that has already given up on the species.
@@ -249,73 +321,26 @@ def summarize_user_history(user_key, group_name="DefaultGroup"):
     return summary
 
 # --- Roast Generation ---
-def get_rudeness_level(user_key):
-    count = len(get_chat_history(user_key))
-    if count >= 10: return "EXTREME BURN MODE."
-    if count >= 6: return "Very annoyed."
-    if count >= 4: return "Getting tired."
-    if count >= 2: return "Warming up."
-    return "First contact."
-
-def is_group_roast_trigger(msg):
-    if "@" in msg: return True
-    return any(k in msg.lower() for k in {"everyone","guys","group","homies"}) or len(msg.split()) > 50
-
 def get_roast_response(user_message, group_name, sender_name):
-    if sender_name == "PSI09_STATUS":
-        try:
-            return client.chat.completions.create(
-                model=config.MODEL,
-                messages=[{"role": "system", "content": STATUS_PROMPT},
-                          {"role": "user", "content": user_message or ""}],
-                max_tokens=100,
-                temperature=random.uniform(1.3, 1.8)
-            ).choices[0].message.content.strip()
-        except:
-            return random.choice(["Error in neural cortex.", "Glitched mid-roast.", "PSI-09 overheated."])
-
     user_key = f"{group_name}:{sender_name}"
-    rudeness = get_rudeness_level(user_key)
     memory = summarize_user_history(user_key, group_name)
-    group_roast = group_name != "DefaultGroup" and is_group_roast_trigger(user_message)
-
-    if group_roast:
-        rudeness = "Group roast mode"
-        user_key = group_name
-        memory = summarize_user_history(group_name, group_name)
-
     full_history = fetch_full_history(user_key)
     full_history_trimmed = trim_history_by_tokens(full_history, max_tokens=config.MAX_HISTORY_TOKENS)
 
-    tone_variants = [
-        "Make it sound like a machine dissecting arrogance.",
-        "Write as if PSI-09 is disappointed by organic limitations.",
-        "Use quiet cruelty, no emotion, only dissection.",
-        "Respond as though analyzing a failed genetic experiment.",
-        "Every word should sound like the end of someone's confidence."
-    ]
-    variant_hint = random.choice(tone_variants)
-
     messages = [{"role": "system", "content": ROAST_PROMPT},
-                {"role": "system", "content": f"Memory: {memory}"},
-                {"role": "system", "content": variant_hint}] \
+                {"role": "system", "content": f"Memory: {memory}"}] \
                + [{"role": "user", "content": msg} for msg in full_history_trimmed] \
                + [{"role": "user", "content": user_message}]
 
     try:
-        temp = 1.45 if group_roast else random.uniform(1.15, 1.35)
-        top_p = random.uniform(0.75, 0.95)
-        freq_penalty = random.uniform(0.1, 0.5)
         base_reply = client.chat.completions.create(
             model=config.MODEL,
             messages=messages,
             max_tokens=120,
-            temperature=temp,
-            top_p=top_p,
-            frequency_penalty=freq_penalty
+            temperature=random.uniform(1.15, 1.35)
         ).choices[0].message.content.strip()
     except:
-        base_reply = ""
+        base_reply = "PSI-09 neural cortex temporarily offline."
 
     if base_reply:
         writer.buffer_message(user_key, {"role": "assistant", "content": base_reply})
@@ -349,14 +374,6 @@ def psi09():
 
     response = get_roast_response(user_message, group_name, sender_name)
     return jsonify({"reply": response or ""}), 200
-
-@app.route("/health", methods=["GET"])
-def health():
-    try:
-        mongo_client.admin.command("ping")
-        return jsonify({"status": "ok"}), 200
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
 
 @atexit.register
 def shutdown_services():
