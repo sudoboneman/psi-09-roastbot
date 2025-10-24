@@ -358,12 +358,12 @@ def get_roast_response(user_message, group_name, sender_name):
     try:
         history_col.update_one(
             {"_id": user_key},
-            {"$push": {"messages": {"role": "assistant", "content": base_reply,
-                                    "timestamp": datetime.now(UTC).isoformat()}}},
+            {"$push": {"messages": {"role": "assistant", "content": "test", "timestamp": datetime.now(UTC).isoformat()}}},
             upsert=True
         )
+        logger.info("Mongo write OK")
     except Exception as e:
-        logger.error(f"MongoDB direct write failed for {user_key}: {e}")
+        logger.error(f"Mongo write failed: {e}")
 
     # Clean response
     clean = re.sub(r'\[.*?MODE.*?\]', '', base_reply)
@@ -378,27 +378,57 @@ def home():
 
 @app.route("/psi09", methods=["POST"])
 def psi09():
-    data = request.get_json(silent=True) or {}
-    user_message = data.get("message")
-    sender_name = data.get("sender")
-    group_name = data.get("group_name") or "DefaultGroup"
+    try:
+        # --- Parse JSON ---
+        try:
+            data = request.get_json(force=True)
+            if not isinstance(data, dict):
+                raise ValueError("JSON payload is not an object")
+        except Exception as e:
+            logger.error(f"Invalid JSON received: {e}")
+            return jsonify({"reply": ""}), 400
 
-    if not user_message or not sender_name:
-        return jsonify({"reply": ""}), 200
+        user_message = data.get("message")
+        sender_name = data.get("sender")
+        group_name = data.get("group_name") or "DefaultGroup"
 
-    store_message(sender_name, group_name, user_message)
+        logger.info(f"Incoming message: sender={sender_name}, group={group_name}, message={user_message}")
 
-    # Reply logic
-    should_reply = not group_name or config.BOT_NUMBER in user_message
-    if not should_reply:
-        return jsonify({"reply": ""}), 200
+        if not user_message or not sender_name:
+            logger.warning(f"Missing sender or message: sender={sender_name}, message={user_message}")
+            return jsonify({"reply": ""}), 200
 
-    # Clean bot mention from message
-    if group_name and config.BOT_NUMBER in user_message:
-        user_message = user_message.replace(config.BOT_NUMBER, "").strip() or "[bot_mention]"
+        # --- Store user message ---
+        try:
+            store_message(sender_name, group_name, user_message)
+            logger.info(f"Stored message for {group_name}:{sender_name}")
+        except Exception as e:
+            logger.error(f"Failed to store message: {e}")
 
-    response = get_roast_response(user_message, group_name, sender_name)
-    return jsonify({"reply": response or ""}), 200
+        # --- Decide whether bot should reply ---
+        should_reply = not group_name or config.BOT_NUMBER in user_message
+        if not should_reply:
+            logger.info("Bot not mentioned, skipping reply")
+            return jsonify({"reply": ""}), 200
+
+        # --- Clean bot mention from message ---
+        if config.BOT_NUMBER in user_message:
+            user_message = user_message.replace(config.BOT_NUMBER, "").strip() or "[bot_mention]"
+            logger.info(f"Cleaned user_message after removing bot mention: {user_message}")
+
+        # --- Generate roast response ---
+        try:
+            response = get_roast_response(user_message, group_name, sender_name)
+            logger.info(f"Generated response for {group_name}:{sender_name} -> {response}")
+        except Exception as e:
+            logger.error(f"Failed to generate roast response: {e}")
+            response = "PSI-09 neural cortex temporarily offline."
+
+        return jsonify({"reply": response or ""}), 200
+
+    except Exception as e:
+        logger.exception(f"Unhandled exception in /psi09 route: {e}")
+        return jsonify({"reply": "Internal error occurred"}), 500
 
 def mongo_keepalive():
     while True:
@@ -414,4 +444,4 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=port, debug=True, threaded=True)
