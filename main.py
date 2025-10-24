@@ -70,115 +70,6 @@ try:
 except KeyError:
     ENCODING = tiktoken.get_encoding("cl100k_base")
 
-# --- Buffered Writer with retry & dead-letter queue ---
-class BufferedWriter:
-    def __init__(self, interval, batch_size, max_queue_size):
-        self.pending = defaultdict(list)
-        self.dead_letter = []
-        self.lock = threading.Lock()
-        self.interval = interval
-        self.batch_size = batch_size
-        self.max_queue_size = max_queue_size
-        self.running = True
-        self.thread = threading.Thread(target=self._flush_loop, daemon=True)
-        self.thread.start()
-
-    def buffer_message(self, user_key, message):
-        with self.lock:
-            self.pending[user_key].append(message)
-
-    def _flush_loop(self):
-        while self.running:
-            time.sleep(self.interval)
-            self._flush()
-
-    def _flush(self):
-        with self.lock:
-            if not self.pending:
-                return
-            local_copy = dict(self.pending)
-            self.pending.clear()
-
-        ops = []
-        for key, msgs in local_copy.items():
-            for i in range(0, len(msgs), self.batch_size):
-                ops.append(UpdateOne(
-                    {"_id": key},
-                    {"$push": {"messages": {"$each": msgs[i:i+self.batch_size]}}},
-                    upsert=True
-                ))
-
-        if ops:
-            self._attempt_bulk_write(ops, local_copy)
-
-    def _attempt_bulk_write(self, ops, original_data, retries=3):
-        """
-        Attempt bulk write with exponential backoff.
-        original_data: Dict mapping user_key -> list of messages (for safe retry)
-        """
-        backoff = 1
-        while retries > 0:
-            try:
-                history_col.bulk_write(ops, ordered=False)
-                logger.info(f"Flushed {len(ops)} operations ({sum(len(msgs) for msgs in original_data.values())} messages)")
-                return
-            except BulkWriteError as e:
-                failed_ops = []
-                for err in e.details.get('writeErrors', []):
-                    idx = err.get('index')
-                    if idx is not None and idx < len(ops):
-                        failed_ops.append(ops[idx])
-
-                if not failed_ops:
-                    logger.error("Bulk write partial failure but no retryable operations identified")
-                    return
-
-                ops = failed_ops
-                retries -= 1
-                if retries > 0:
-                    logger.warning(f"Retrying {len(ops)} failed operations in {backoff}s... ({retries} attempts left)")
-                    time.sleep(backoff)
-                    backoff *= 2
-
-            except PyMongoError as e:
-                logger.error(f"MongoDB error during flush: {e}. Retrying in {backoff}s... ({retries} attempts left)")
-                retries -= 1
-                if retries > 0:
-                    time.sleep(backoff)
-                    backoff *= 2
-
-        # All retries exhausted - use dead-letter queue
-        with self.lock:
-            total_queued = sum(len(msgs) for msgs in self.pending.values())
-
-            if total_queued < self.max_queue_size:
-                # Re-queue using original_data (safer than extracting from UpdateOne objects)
-                for key, msgs in original_data.items():
-                    self.pending[key].extend(msgs)
-                logger.warning(f"Re-queued {len(original_data)} user keys to pending buffer")
-            else:
-                # Queue full - move to dead-letter
-                for key, msgs in original_data.items():
-                    self.dead_letter.append({"user_key": key, "messages": msgs, "timestamp": datetime.now(UTC).isoformat()})
-                logger.error(f"DEAD LETTER: Dropped {sum(len(msgs) for msgs in original_data.values())} messages from {len(original_data)} users (queue full)")
-
-    def get_stats(self):
-        """Return buffer statistics for monitoring."""
-        with self.lock:
-            return {
-                "pending_users": len(self.pending),
-                "pending_messages": sum(len(msgs) for msgs in self.pending.values()),
-                "dead_letter_batches": len(self.dead_letter),
-                "dead_letter_messages": sum(len(batch["messages"]) for batch in self.dead_letter)
-            }
-
-    def stop(self):
-        self.running = False
-        self._flush()
-        logger.info(f"BufferedWriter stopped. Final stats: {self.get_stats()}")
-
-writer = BufferedWriter(config.WRITE_INTERVAL, config.BATCH_SIZE, config.MAX_RETRY_QUEUE_SIZE)
-
 # --- Memory Cache ---
 class MemoryCache:
     def __init__(self, ttl_seconds):
@@ -247,9 +138,9 @@ try:
         if "summary" in doc:
             memory_cache.set(doc["_id"], doc["summary"], write_to_db=False)
             preload_count += 1
-    logger.info(f"✓ Preloaded {preload_count} user summaries into cache")
+    logger.info(f"Preloaded {preload_count} user summaries into cache")
 except Exception as e:
-    logger.error(f"✗ Failed to preload user memory: {e}")
+    logger.error(f"Failed to preload user memory: {e}")
 
 # --- Chat History Utilities ---
 def get_chat_history_unified(user_key, limit_messages=None, max_tokens=None):
@@ -282,12 +173,17 @@ def get_chat_history_unified(user_key, limit_messages=None, max_tokens=None):
 
 def store_message(sender_name, group_name, message):
     user_key = f"{group_name}:{sender_name}"
+    if sender_name.startswith("PSI09_"):
+        return  # Skip synthetic senders (like PSI09_STATUS)
     entry = {
         "role": "user",
         "content": message,
         "timestamp": datetime.now(UTC).isoformat()
     }
-    writer.buffer_message(user_key, entry)
+    try:
+        history_col.update_one({"_id": user_key}, {"$push": {"messages": entry}}, upsert=True)
+    except Exception as e:
+        logger.error(f"MongoDB direct write failed for {user_key}: {e}")
     memory_cache.increment_message_count(user_key)
 
 # --- Prompts ---
@@ -459,8 +355,15 @@ def get_roast_response(user_message, group_name, sender_name):
     if not base_reply:
         base_reply = "PSI-09 neural cortex temporarily offline."
 
-    # Buffer assistant response
-    writer.buffer_message(user_key, {"role": "assistant", "content": base_reply})
+    try:
+        history_col.update_one(
+            {"_id": user_key},
+            {"$push": {"messages": {"role": "assistant", "content": base_reply,
+                                    "timestamp": datetime.now(UTC).isoformat()}}},
+            upsert=True
+        )
+    except Exception as e:
+        logger.error(f"MongoDB direct write failed for {user_key}: {e}")
 
     # Clean response
     clean = re.sub(r'\[.*?MODE.*?\]', '', base_reply)
@@ -496,23 +399,6 @@ def psi09():
 
     response = get_roast_response(user_message, group_name, sender_name)
     return jsonify({"reply": response or ""}), 200
-
-@app.route("/stats", methods=["GET"])
-def stats():
-    """Health check endpoint with system stats."""
-    return jsonify({
-        "status": "operational",
-        "writer": writer.get_stats(),
-        "cache": memory_cache.get_stats(),
-        "timestamp": datetime.now(UTC).isoformat()
-    }), 200
-
-@atexit.register
-def shutdown_services():
-    logger.info("Shutting down services...")
-    writer.stop()
-    mongo_client.close()
-    logger.info("Shutdown complete")
 
 def mongo_keepalive():
     while True:
