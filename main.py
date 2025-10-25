@@ -26,7 +26,7 @@ UTC = timezone.utc
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
-    MODEL: str = "gpt-4.1-nano"
+    MODEL: str = "gpt-4o-mini"
     MAX_HISTORY_TOKENS: int = 1200
     BOT_NUMBER: str = "@919477853548"
     WRITE_INTERVAL: int = 5
@@ -406,7 +406,11 @@ def psi09():
             logger.error(f"Failed to store message: {e}")
 
         # --- Decide whether bot should reply ---
-        should_reply = not group_name or config.BOT_NUMBER in user_message
+        should_reply = (
+            sender_name == "PSI09_STATUS" or
+            group_name == "DefaultGroup" or
+            config.BOT_NUMBER in user_message
+        )
         if not should_reply:
             logger.info("Bot not mentioned, skipping reply")
             return jsonify({"reply": ""}), 200
