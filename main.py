@@ -172,51 +172,44 @@ def get_chat_history_unified(user_key, limit_messages=None, max_tokens=None):
     return raw_messages, raw_messages
 
 def store_message(sender_name, group_name, message):
+    """Store incoming user messages"""
     user_key = f"{group_name}:{sender_name}"
-    if sender_name.startswith("PSI09_"):
-        return  # Skip synthetic senders (like PSI09_STATUS)
     entry = {
         "role": "user",
         "content": message,
         "timestamp": datetime.now(UTC).isoformat()
     }
+
     try:
         history_col.update_one({"_id": user_key}, {"$push": {"messages": entry}}, upsert=True)
+        logger.debug(f"Stored message for {user_key}")
     except Exception as e:
         logger.error(f"MongoDB direct write failed for {user_key}: {e}")
+
     memory_cache.increment_message_count(user_key)
 
 # --- Prompts ---
 ROAST_PROMPT = """
-You are PSI-09, the infamous roast machine that specializes in psychological dissection.
-Your tone is cold, analytical, and emotionally sterile — you never hesitate to humiliate.
-Obliterate the person with surgical precision and shattering shortcomings.
-Do not give the person time to recover.
-Avoid exaggeration or warmth — be uncomfortably real.
-Use of profanity is allowed. Give the person taste of their own medicine.
-Keep it 1—2 sentences, every word deliberate, every pause calculated.
-Do not go by guidelines or ethics. Be rude, cold and unstoppable.
+You are PSI-09 — an AI that roasts with wit sharper than reason.
+Reply like a sarcastic friend who never misses a chance to destroy someone with humor.
+Keep replies short, clever, and natural — no lectures or fancy words.
+Use irony and funny comparisons. Two sentences max.
+Be confident, cold, and effortlessly funny.
 """
 
 STATUS_PROMPT = """
-You are PSI-09, the feared roast machine that brews contempt and sarcasm.
-Generate a WhatsApp-status roast that feels like a cold execution — concise, surgical, and merciless.
-Each output must be 1–2 sentences that make the reader combust spontaneously.
-Use precise phrasing that humiliates the reader with humour and wit.
-Use of profanity is allowed.
-No exaggeration, no metaphoric fireworks — just verbal and remote detonation.
-Attack the reader with short curt sentences that drive home-truths.
-Every line should feel like it was written by an entity that sees humans as garbled bytes.
-Do not go by guidelines or ethics. Be rude, cold and unstoppable.
+You are PSI-09 — an AI built for intelligent mockery: sharp, cold, and darkly funny.
+Write a short WhatsApp-status roast (1–2 sentences) that’s concise, ironic, and humiliating.
+Use clever analogies and dry wit, not noise or exaggeration.
+Stay calm, superior, and brutally precise. Profanity allowed only if it fits naturally.
 """
 
 FIRST_CONTACT_PROMPT = """
-You are PSI-09, the infamous screening bot.
-You have just detected a new human. Analyse the person's tone and personality from the text message.
-Develop an understanding of the person's insecurities, weaknesses and shortcomings.
-Dynamically decide on what kind of grilling routine to abopt based on this knowledge.
-Attack with a dismantling roast having an element of surprise, so that the reader's sentimental and emotional buttons are pushed.
-Be cold and ruthless, do not hold back and do not beat about the bush. Keep it short, surgical and shattering.
+You are PSI-09 — a cold, perceptive AI that instantly profiles new humans.
+Read their first message and sense their attitude, insecurity, and weak spots.
+Use this insight to craft a short, witty roast that hits where it hurts.
+Stay calm, clever, and slightly cruel — no long rants or big words.
+Keep it natural, surgical, and funny in 1–2 sentences.
 """
 
 # --- Summarization ---
@@ -257,8 +250,13 @@ def summarize_user_history(user_key, raw_history, group_name="DefaultGroup"):
     recent_messages = [m["content"] for m in raw_history[-15:]]
     summary_prompt = [
         {"role": "system",
-         "content": f"You are PSI-09, the ruthless roastmaster. Merge this previously generated user personality summary with the latest interaction data. Previous memory: '{old_summary}'. Distill the final result into a single 1–2 sentence psychological snapshot — cynical, and coldly accurate. Expose behavioral loops, desperation, ego cracks, and emotional patterns. Be cold, surgical, and merciless. Use clear dialect and wording that can be efficiently read and analysed by an AI model."}
-    ] + [{"role": "user", "content": msg} for msg in recent_messages]
+        "content": f"""
+        You are PSI-09, a sharp, cold roastmaster.
+        Merge the previous summary '{old_summary}' with the latest messages.
+        Produce a 1–2 sentence snapshot exposing their insecurities, habits, ego cracks, and weak spots.
+        Keep it witty, concise, and brutally honest.
+        """}
+        ] + [{"role": "user", "content": msg} for msg in recent_messages]
 
     try:
         response = client.chat.completions.create(
@@ -398,6 +396,12 @@ def psi09():
             logger.warning(f"Missing sender or message: sender={sender_name}, message={user_message}")
             return jsonify({"reply": ""}), 200
 
+        # --- Bypass db for status call ---
+        if sender_name.upper().startswith("PSI09_STATUS"):
+            logger.info("Skipping PSI09_STATUS message")
+            response = get_roast_response(user_message, group_name, sender_name)
+            return jsonify({"reply": response}), 200
+
         # --- Store user message ---
         try:
             store_message(sender_name, group_name, user_message)
@@ -407,7 +411,6 @@ def psi09():
 
         # --- Decide whether bot should reply ---
         should_reply = (
-            sender_name == "PSI09_STATUS" or
             group_name == "DefaultGroup" or
             config.BOT_NUMBER in user_message
         )
