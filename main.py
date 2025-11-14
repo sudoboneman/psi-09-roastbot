@@ -28,7 +28,7 @@ class Config:
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
     MODEL: str = "gpt-4o-mini"
     MAX_HISTORY_TOKENS: int = 1200
-    BOT_NUMBER: str = "@919477853548"
+    BOT_NUMBER: str = "@918100185320"
     WRITE_INTERVAL: int = 5
     BATCH_SIZE: int = 100
     MEMORY_TTL: int = 300
