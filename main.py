@@ -656,18 +656,53 @@ def psi09():
         user_message = data.get("message", "")
         sender_name = data.get("sender", "")
         group_name = data.get("group_name") or "DefaultGroup"
+        chat_type = data.get("chat_type", "")  # optional field from psi-09-web
 
-        logger.info(f"Incoming: sender={sender_name}, group={group_name}, message={(user_message[:120] + '...') if len(user_message) > 120 else user_message}")
+        logger.info(
+            f"Incoming: sender={sender_name}, group={group_name}, chat_type={chat_type}, "
+            f"message={(user_message[:120] + '...') if len(user_message) > 120 else user_message}"
+        )
 
         if not user_message or not sender_name:
             return jsonify({"reply": ""}), 200
 
+        # -------------------------
+        # Operator / SELF handling
+        # -------------------------
+        # psi-09-web will send outgoing messages with sender="SELF" and chat_type="OPERATOR".
+        # Treat these as operator context: store them and enqueue summarization, but never reply.
+        if isinstance(sender_name, str) and (sender_name == "SELF" or chat_type.upper() == "OPERATOR"):
+            try:
+                # Store under the usual key so operator history exists: group:SELF
+                store_user_message(group_name, "SELF", user_message)
+                store_group_message(group_name, "SELF", user_message)
+            except Exception as e:
+                logger.warning(f"Failed to store operator message: {e}")
+
+            # increment counters & schedule summarization like a normal user (but labelled SELF)
+            user_key = f"{group_name}:SELF"
+            ucount = memory_cache.increment(user_key)
+            if ucount >= config.SUMMARIZE_EVERY_N_MESSAGES:
+                enqueue_user_summary(user_key)
+
+            if group_name != "DefaultGroup":
+                gcount = group_memory_cache.increment(group_name)
+                if gcount >= config.SUMMARIZE_EVERY_N_MESSAGES:
+                    enqueue_group_summary(group_name)
+
+            # Do not generate a roast for operator messages — return immediately
+            return jsonify({"reply": ""}), 200
+
+        # -------------------------
         # Special direct status calls (bypass history)
+        # -------------------------
         if isinstance(sender_name, str) and sender_name.upper().startswith("PSI09_STATUS"):
             reply = get_roast_response(user_message, group_name, sender_name)
             return jsonify({"reply": reply}), 200
 
-        # Always store both user and group messages (for group awareness)
+        # -------------------------
+        # Normal incoming message storage
+        # -------------------------
         try:
             store_user_message(group_name, sender_name, user_message)
             store_group_message(group_name, sender_name, user_message)
@@ -695,7 +730,12 @@ def psi09():
 
         # If mentioned, clean mention from the message (so prompt sees user text)
         if bot_mentioned_in(user_message):
-            user_message = re.sub(r"(?<!\S)"+re.escape(config.BOT_NUMBER)+r"(?!\S)", "", user_message, flags=re.IGNORECASE).strip() or "[bot_mention]"
+            user_message = re.sub(
+                r"(?<!\S)"+re.escape(config.BOT_NUMBER)+r"(?!\S)",
+                "",
+                user_message,
+                flags=re.IGNORECASE
+            ).strip() or "[bot_mention]"
 
         # Generate roast
         try:
@@ -710,6 +750,7 @@ def psi09():
     except Exception as e:
         logger.exception(f"Unhandled exception in /psi09: {e}")
         return jsonify({"reply": "Internal error occurred"}), 500
+
 
 # ---------------------------
 # Mongo keepalive thread
