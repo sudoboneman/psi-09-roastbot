@@ -670,7 +670,8 @@ def psi09():
         # Always store both user and group messages (for group awareness)
         try:
             store_user_message(group_name, sender_name, user_message)
-            store_group_message(group_name, sender_name, user_message)
+            if group_name != "DefaultGroup":
+                store_group_message(group_name, sender_name, user_message)
         except Exception as e:
             logger.warning(f"Storage attempt failed: {e}")
 
