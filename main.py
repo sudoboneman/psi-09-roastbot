@@ -48,7 +48,7 @@ UTC = timezone.utc
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
-    MODEL: str = "gpt-4o-mini"
+    MODEL: str = "gpt-4.1-mini"
     MAX_HISTORY_TOKENS: int = 1200           # total token budget (history + small system memory)
     MAX_SYSTEM_TOKENS: int = 350             # reserve for system memory (prompts + memories)
     MAX_HISTORY_MESSAGES: int = 30
