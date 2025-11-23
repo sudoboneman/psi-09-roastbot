@@ -550,26 +550,21 @@ def get_roast_response(user_message, group_name, sender_name):
     raw_user, trimmed_user = fetch_history(user_key, limit_messages=config.MAX_HISTORY_MESSAGES, max_tokens=config.MAX_HISTORY_TOKENS)
 
     # Lazy user summarization decision:
-    # Only trigger summarization if enough messages exist, and either cache marks it or DB has no summary.
     user_memory = memory_cache.get(user_key)
     if (not user_memory and len(raw_user) >= 3) or memory_cache.should_summary(user_key):
-        # enqueue for background summarization to avoid blocking
         enqueue_user_summary(user_key)
 
-    # Fetch group history and group memory (use cache)
+    # Fetch group history and group memory
     if group_name != "DefaultGroup":
         raw_group, trimmed_group = fetch_group_history(group_name, limit_messages=config.GROUP_HISTORY_SLICE, max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT)
         group_memory = group_memory_cache.get(group_name)
-        # only enqueue async summary when there is enough data
         if len(raw_group) >= 6 and (not group_memory or group_memory_cache.should_summary(group_name)):
             enqueue_group_summary(group_name)
     else:
         raw_group, trimmed_group = [], []
         group_memory = ""
 
-    # Build system memory text (short)
-    # Keep a token reserved budget for system memory; if system tokens exceed MAX_SYSTEM_TOKENS, truncate them.
-    # Compose a concise system memory string
+    # Build system memory text
     sys_parts = []
     if user_memory:
         sys_parts.append(f"UserMemory: {user_memory}")
@@ -577,32 +572,20 @@ def get_roast_response(user_message, group_name, sender_name):
         sys_parts.append(f"GroupMemory: {group_memory}")
     system_memory_text = "\n".join(sys_parts) if sys_parts else ""
 
-    # Estimate tokens used by system memory
-    sys_tokens = tokens_of(system_memory_text) + tokens_of(ROAST_PROMPT)  # conservative
-
-    # Decide how many tokens remain for history
+    sys_tokens = tokens_of(system_memory_text) + tokens_of(ROAST_PROMPT)
     remaining_tokens_for_history = max(100, config.MAX_HISTORY_TOKENS - sys_tokens)
-    # Ensure at least some budget (100) remains for actual messages
-
-    # Trim trimmed_user again according to remaining token budget
     trimmed_user = trim_messages_to_token_budget(trimmed_user, remaining_tokens_for_history)
 
-    # Build final message list
+    # Build final messages
     system_prompt = GROUP_ROAST_PROMPT if group_name != "DefaultGroup" else ROAST_PROMPT
-    messages = [
-        {"role": "system", "content": system_prompt},
-    ]
+    messages = [{"role": "system", "content": system_prompt}]
     if system_memory_text:
         messages.append({"role": "system", "content": system_memory_text})
-
-    # include trimmed user history messages (role kept as-is)
     for m in trimmed_user:
         messages.append({"role": m.get("role", "user"), "content": m.get("content", "")})
-
-    # add current user message
     messages.append({"role": "user", "content": user_message})
 
-    # OpenAI retry loop with exponential backoff
+    # OpenAI retry loop
     retries = config.OPENAI_RETRIES
     backoff = 1
     base_reply = None
@@ -627,18 +610,23 @@ def get_roast_response(user_message, group_name, sender_name):
             time.sleep(backoff)
             backoff = min(backoff * 2, 16)
 
-    # Save assistant reply into history (best-effort)
+    # Safely clean formatting and write to history (cannot fail)
+    try:
+        clean_reply = re.sub(r"\s{3,}", " ", base_reply or "").strip()
+    except Exception as e:
+        logger.warning(f"Cleaning reply failed for {user_key}: {e}")
+        clean_reply = "PSI-09 neural cortex temporarily offline."
+
     try:
         history_col.update_one(
             {"_id": user_key},
-            {"$push": {"messages": {"role": "assistant", "content": base_reply, "timestamp": datetime.now(UTC).isoformat()}}}, upsert=True
+            {"$push": {"messages": {"role": "assistant", "content": clean_reply, "timestamp": datetime.now(UTC).isoformat()}}},
+            upsert=True
         )
     except PyMongoError as e:
         logger.warning(f"Failed to write assistant reply to history for {user_key}: {e}")
 
-    # Clean up formatting slightly (preserve single intentional double-space)
-    clean = re.sub(r"\s{3,}", " ", base_reply).strip()
-    return clean
+    return clean_reply
 
 # ---------------------------
 # Flask routes
