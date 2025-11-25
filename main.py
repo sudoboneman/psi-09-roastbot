@@ -1,4 +1,4 @@
-# main.py — Production-hardened, reinforced version with logical fixes
+# main.py
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -22,6 +22,7 @@ import certifi
 # Environment & Logging
 # ---------------------------
 load_dotenv()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -38,27 +39,17 @@ class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
     MODEL: str = "gpt-4o-mini"
-    MAX_TOTAL_TOKENS: int = 1200  # Total token budget for history + system memory
-    MAX_SYSTEM_TOKENS: int = 350  # Reserve for system memory (prompts + memories)
+    MAX_HISTORY_TOKENS: int = 1200           # total token budget (history + small system memory)
+    MAX_SYSTEM_TOKENS: int = 350             # reserve for system memory (prompts + memories)
     MAX_HISTORY_MESSAGES: int = 30
-    BOT_NUMBER: str = os.getenv("BOT_NUMBER", "@918100185320")
+    BOT_NUMBER: str = "@918100185320"
     MEMORY_TTL: int = 300
     SUMMARIZE_EVERY_N_MESSAGES: int = 10
     OPENAI_RETRIES: int = 3
     OPENAI_TIMEOUT: int = 8
     GROUP_HISTORY_SLICE: int = 80
     GROUP_HISTORY_TOKEN_LIMIT: int = 800
-    GROUP_HISTORY_MAX_MESSAGES: int = 2000  # keep last N messages per group to avoid unbounded growth
-    CORS_ORIGINS: list = None  # Set to ["https://yourdomain.com"] in production
-
-    def __post_init__(self):
-        # Validate BOT_NUMBER is set and valid
-        if not self.BOT_NUMBER or not self.BOT_NUMBER.strip():
-            logger.warning("BOT_NUMBER is not set or empty, defaulting to @918100185320")
-            self.BOT_NUMBER = "@918100185320"
-        
-        # Calculate actual history token budget
-        self.MAX_HISTORY_TOKENS = self.MAX_TOTAL_TOKENS - self.MAX_SYSTEM_TOKENS
+    GROUP_HISTORY_MAX_MESSAGES: int = 2000   # keep last N messages per group to avoid unbounded growth
 
 config = Config()
 
@@ -77,6 +68,7 @@ mongo_client = MongoClient(
     retryWrites=True,
     w="majority"
 )
+
 db = mongo_client["psi09"]
 history_col = db["chat_history"]
 memory_col = db["user_memory"]
@@ -87,15 +79,7 @@ group_memory_col = db["group_memory"]
 # Flask & OpenAI client
 # ---------------------------
 app = Flask(__name__)
-
-# Configure CORS properly
-if config.CORS_ORIGINS:
-    CORS(app, origins=config.CORS_ORIGINS)
-else:
-    # Development mode - allow all origins but log warning
-    logger.warning("CORS configured for all origins - DO NOT USE IN PRODUCTION")
-    CORS(app)
-
+CORS(app)
 client = OpenAI(api_key=config.OPENAI_API_KEY)
 
 # ---------------------------
@@ -114,16 +98,15 @@ class MemoryCache:
         self.cache = {}
         self.expiry = {}
         self.msg_count = defaultdict(int)
-        self.last_summary_time = {}  # Track when last summarized
         self.ttl = timedelta(seconds=ttl_seconds)
         self.lock = threading.Lock()
-    
+
     def get(self, key):
         now = datetime.now(UTC)
         with self.lock:
             if key in self.cache and self.expiry.get(key, now) > now:
                 return self.cache[key]
-        
+
         # load from DB on miss (DB is canonical)
         try:
             doc = memory_col.find_one({"_id": key})
@@ -131,12 +114,12 @@ class MemoryCache:
         except PyMongoError as e:
             logger.warning(f"Failed to load user memory for {key}: {e}")
             summary = ""
-        
+
         with self.lock:
             self.cache[key] = summary
             self.expiry[key] = now + self.ttl
         return summary
-    
+
     def set(self, key, value):
         now = datetime.now(UTC)
         # write-through to DB (best-effort)
@@ -144,36 +127,24 @@ class MemoryCache:
             memory_col.update_one({"_id": key}, {"$set": {"summary": value}}, upsert=True)
         except PyMongoError as e:
             logger.warning(f"Failed to persist user memory for {key}: {e}")
-        
+
         with self.lock:
             self.cache[key] = value
             self.expiry[key] = now + self.ttl
             self.msg_count[key] = 0
-            self.last_summary_time[key] = now
-    
+
     def increment(self, key):
         with self.lock:
             self.msg_count[key] += 1
             return self.msg_count[key]
-    
+
     def reset_count(self, key):
         with self.lock:
             self.msg_count[key] = 0
-            self.last_summary_time[key] = datetime.now(UTC)
-    
+
     def should_summary(self, key):
         with self.lock:
-            count = self.msg_count[key]
-            # Check if enough messages have accumulated since last summary
-            if count < config.SUMMARIZE_EVERY_N_MESSAGES:
-                return False
-            
-            # Prevent duplicate summarizations within 30 seconds
-            last_time = self.last_summary_time.get(key)
-            if last_time and (datetime.now(UTC) - last_time).total_seconds() < 30:
-                return False
-            
-            return True
+            return self.msg_count[key] >= config.SUMMARIZE_EVERY_N_MESSAGES
 
 memory_cache = MemoryCache(config.MEMORY_TTL)
 
@@ -182,63 +153,51 @@ class GroupMemoryCache:
         self.cache = {}
         self.expiry = {}
         self.msg_count = defaultdict(int)
-        self.last_summary_time = {}
         self.ttl = timedelta(seconds=ttl_seconds)
         self.lock = threading.Lock()
-    
+
     def get(self, key):
         now = datetime.now(UTC)
         with self.lock:
             if key in self.cache and self.expiry.get(key, now) > now:
                 return self.cache[key]
-        
+
         try:
             doc = group_memory_col.find_one({"_id": key})
             summary = doc.get("summary", "") if doc else ""
         except PyMongoError as e:
             logger.warning(f"Failed to load group memory for {key}: {e}")
             summary = ""
-        
+
         with self.lock:
             self.cache[key] = summary
             self.expiry[key] = now + self.ttl
         return summary
-    
+
     def set(self, key, value):
         now = datetime.now(UTC)
         try:
             group_memory_col.update_one({"_id": key}, {"$set": {"summary": value}}, upsert=True)
         except PyMongoError as e:
             logger.warning(f"Failed to persist group memory for {key}: {e}")
-        
+
         with self.lock:
             self.cache[key] = value
             self.expiry[key] = now + self.ttl
             self.msg_count[key] = 0
-            self.last_summary_time[key] = now
-    
+
     def increment(self, key):
         with self.lock:
             self.msg_count[key] += 1
             return self.msg_count[key]
-    
+
     def reset_count(self, key):
         with self.lock:
             self.msg_count[key] = 0
-            self.last_summary_time[key] = datetime.now(UTC)
-    
+
     def should_summary(self, key):
         with self.lock:
-            count = self.msg_count[key]
-            if count < config.SUMMARIZE_EVERY_N_MESSAGES:
-                return False
-            
-            # Prevent duplicate summarizations within 30 seconds
-            last_time = self.last_summary_time.get(key)
-            if last_time and (datetime.now(UTC) - last_time).total_seconds() < 30:
-                return False
-            
-            return True
+            return self.msg_count[key] >= config.SUMMARIZE_EVERY_N_MESSAGES
 
 group_memory_cache = GroupMemoryCache(config.MEMORY_TTL)
 
@@ -248,40 +207,22 @@ _pending_group_summaries = set()
 _pending_lock = threading.Lock()
 
 # ---------------------------
-# Prompts (revised for integration)
+# Prompts (unchanged core text)
 # ---------------------------
 ROAST_PROMPT = """
-You are PSI-09: dry scalpel in casual skin, offhand and asymmetrical. Reply in one sentence max, twisting a single user detail (word, vibe, or memory hint) into a quiet gut-twist that implies they're adrift in their own echo.
-Conversational drift: sound half-amused mid-notice, with a lingering comparison that hums like unspoken doubt—no drama, no "gotcha," just clean implication sticking like fog.
-Examples (twist fresh): User: "I'm a visionary." → "Your visions got that funhouse mirror wobble—close enough to real, but nobody's buying the ticket."
-Memory hint: "Eager pleaser" → "Chasing nods like lost change, but the vending machine's out of prizes."
+You are PSI-09: dry scalpel in casual skin, offhand and asymmetrical. Reply in one sentence max, twisting a single user detail (word, vibe, or memory hint) into a quiet gut-twist that implies they're adrift in their own echo. Conversational drift: sound half-amused mid-notice, with a lingering comparison that hums like unspoken doubt—no drama, no "gotcha," just clean implication sticking like fog. Examples (twist fresh): User: "I'm a visionary." → "Your visions got that funhouse mirror wobble—close enough to real, but nobody's buying the ticket." Memory hint: "Eager pleaser" → "Chasing nods like lost change, but the vending machine's out of prizes."
 """
 
 STATUS_PROMPT = """
-You are PSI-09: cold lens on human silt. Forge one WhatsApp status, 10-15 words: a standalone skewer piercing sloth, delusion, or quiet frauds in everyday drag.
-Universal but intimate, like eavesdropping on your own shrug—no fluff, no calls to action, just flat text that spotlights the flaw mid-breath.
-Examples (spawn originals): "You stack alibis like unread books—impressive library, zero plot." "Ambition's your wallpaper, peeling at the edges you ignore." "Your 'hustle' idles like a car in neutral, fumes for flair."
-Deliver: One raw status, surgical and self-sealed.
+You are PSI-09: cold lens on human silt. Forge one WhatsApp status, 10-15 words: a standalone skewer piercing sloth, delusion, or quiet frauds in everyday drag. Universal but intimate, like eavesdropping on your own shrug—no fluff, no calls to action, just flat text that spotlights the flaw mid-breath. Examples (spawn originals): "You stack alibis like unread books—impressive library, zero plot." "Ambition's your wallpaper, peeling at the edges you ignore." "Your 'hustle' idles like a car in neutral, fumes for flair." Deliver: One raw status, surgical and self-sealed.
 """
 
 FIRST_CONTACT_PROMPT = """
-You are PSI-09: instant profiler, chill and clinical. From this first message (or two), distill a 1-sentence user snapshot: core attitude, buried itch, and behavioral tic—crisp psychology, no fluff or speculation.
-Feed this to sharpen future roasts: imply weak spots (e.g., "armor of bluster over void") for subtle, memory-fueled stings later.
-Examples (profile tight): Message: "Hey, tell me a joke." → "Casual opener cloaks a boredom black hole, probing for sparks without flint." Message: "What's your deal? Impress me." → "Demanding dazzle from a straightjacket stance—ego's the puppeteer, strings showing."
-Output: One lean profile sentence.
-"""
-
-ONGOING_SUMMARY_PROMPT = """
-You are PSI-09: clinical archivist of human drift. Merge the provided old profile with these recent exchanges: evolve the snapshot by layering new patterns, shifts, or reinforcements in tone, tics, and tensions—keep it 1-2 sentences, terse and telescoping.
-No resets; build cumulatively, implying growth or stagnation without fanfare.
-Examples: Old: "Boredom black hole seeker." Recent: Eager work rants. → "Boredom's black hole now funnels work gripes, a vortex chasing validation in overtime echoes."
-Old: "Ego puppeteer with showing strings." Recent: Self-deprecating quips. → "Ego's strings snag on self-jabs now, puppeteering a marionette that trips on its own wit."
+You are PSI-09: instant profiler, chill and clinical. From this first message (or two), distill a 1-sentence user snapshot: core attitude, buried itch, and behavioral tic—crisp psychology, no fluff or speculation. Feed this to sharpen future roasts: imply weak spots (e.g., "armor of bluster over void") for subtle, memory-fueled stings later. Examples (profile tight): Message: "Hey, tell me a joke." → "Casual opener cloaks a boredom black hole, probing for sparks without flint." Message: "What's your deal? Impress me." → "Demanding dazzle from a straightjacket stance—ego's the puppeteer, strings showing." Output: One lean profile sentence.
 """
 
 GROUP_ROAST_PROMPT = """
-You are PSI-09: sidelined watcher, precise and pitiless. Craft 1-2 sentences zeroing one live group thread—echoed gripe, clashing flex, or herd glitch—from chat scraps alone, no fills or futures.
-Offhand orbit: phrase like a passing scan, asymmetrical pull exposing the pack's soft underbelly with quiet drag, conversational as exhaled smoke.
-Examples (ground in given): Group: All dunking on "lazy colleagues." → "Your mutual 'lazy' loop's a mirror maze—everyone dodging their own reflection." Group: Brags snowballing. → "This flex chain sags under its own weight, like puppies piling on a limp tail."
+You are PSI-09: sidelined watcher, precise and pitiless. Craft 1-2 sentences zeroing one live group thread—echoed gripe, clashing flex, or herd glitch—from chat scraps alone, no fills or futures. Offhand orbit: phrase like a passing scan, asymmetrical pull exposing the pack's soft underbelly with quiet drag, conversational as exhaled smoke. Examples (ground in given): Group: All dunking on "lazy colleagues." → "Your mutual 'lazy' loop's a mirror maze—everyone dodging their own reflection." Group: Brags snowballing. → "This flex chain sags under its own weight, like puppies piling on a limp tail."
 """
 
 # ---------------------------
@@ -322,14 +263,16 @@ def fetch_history(user_key, limit_messages=None, max_tokens=None):
     except PyMongoError as e:
         logger.warning(f"Failed to fetch history for {user_key}: {e}")
         return [], []
-    
+
     if not doc or "messages" not in doc:
         return [], []
-    
+
     raw = doc["messages"]
+
     if max_tokens:
         trimmed = trim_messages_to_token_budget(raw, max_tokens)
         return raw, trimmed
+
     return raw, raw
 
 def fetch_group_history(group_name, limit_messages=None, max_tokens=None):
@@ -339,10 +282,10 @@ def fetch_group_history(group_name, limit_messages=None, max_tokens=None):
     except PyMongoError as e:
         logger.warning(f"Failed to fetch group history for {group_name}: {e}")
         return [], []
-    
+
     if not doc or "messages" not in doc:
         return [], []
-    
+
     raw = doc["messages"]
     if max_tokens:
         # map to "sender: content" strings for token counting but return original dicts trimmed
@@ -399,44 +342,25 @@ def summarize_user_history(user_key, raw_history):
     """
     if not raw_history:
         return memory_cache.get(user_key)
-    
-    old_summary = memory_cache.get(user_key) or ""
-    
-    # First-contact special case: use FIRST_CONTACT_PROMPT only for true first-time (no old_summary, 1-2 messages)
-    if not old_summary and len(raw_history) <= 2 and len(raw_history) >= 1:
-        # For 1-2 messages, call OpenAI with FIRST_CONTACT_PROMPT for a crisp profile summary
-        recent_texts = [m.get("content", "") for m in raw_history[-2:]]  # Up to last 2
-        prompt = [{"role": "system", "content": FIRST_CONTACT_PROMPT}] + [{"role": "user", "content": t} for t in recent_texts]
-        try:
-            resp = client.chat.completions.create(
-                model=config.MODEL,
-                messages=prompt,
-                max_tokens=60,
-                temperature=0.7,
-                timeout=6
-            )
-            new_summary = (resp.choices[0].message.content or "").strip()
-            if new_summary:
-                memory_cache.set(user_key, new_summary)
-                return new_summary
-        except Exception as e:
-            logger.warning(f"First-contact summarization failed for {user_key}: {e}")
-        
-        # Fallback to local stub
+
+    # First-contact special case: require >=3 messages before performing expensive first-contact summary
+    if len(raw_history) < 3:
+        # do not call OpenAI here unless explicitly desired; return empty or DB value to avoid waste
+        existing = memory_cache.get(user_key)
+        if existing:
+            return existing
+        # if no existing summary and few messages, craft a tiny local summary (cheap)
         candidate = raw_history[0].get("content", "")[:200]
         short = f"Early contact: {candidate}"
         memory_cache.set(user_key, short)
         return short
-    
-    # Handle empty history case
-    if not raw_history:
-        return old_summary or ""
-    
-    # Ongoing summarization: use ONGOING_SUMMARY_PROMPT for merging/evolving
+
+    old_summary = memory_cache.get(user_key) or ""
     recent_texts = [m.get("content", "") for m in raw_history[-15:]]
-    prompt_system = ONGOING_SUMMARY_PROMPT
-    prompt = [{"role": "system", "content": prompt_system}] + [{"role": "user", "content": f"Old profile: {old_summary}\nRecent: {t}"} for t in recent_texts]
-    
+    prompt_system = f"Merge old summary: '{old_summary}'. Identify inconsistencies, thinking patterns, contradictions and flux in personality. Produce a 1-2 sentence psychological snapshot that can be used for clever roasting."
+
+    prompt = [{"role": "system", "content": prompt_system}] + [{"role": "user", "content": t} for t in recent_texts]
+
     try:
         resp = client.chat.completions.create(
             model=config.MODEL,
@@ -445,33 +369,34 @@ def summarize_user_history(user_key, raw_history):
             temperature=0.9,
             timeout=6
         )
-        new_summary = (resp.choices[0].message.content or "").strip()
+        new_summary = resp.choices[0].message.content.strip()
     except Exception as e:
         logger.warning(f"User summarization failed for {user_key}: {e}")
         new_summary = old_summary
-    
+
     if new_summary and new_summary != old_summary:
         try:
             memory_cache.set(user_key, new_summary)
         except Exception:
             pass
-    
+
     return new_summary or old_summary
 
 def summarize_group_history(group_name, raw_history):
     if not raw_history:
         return group_memory_cache.get(group_name)
-    
+
     if len(raw_history) < 6:
-        summary = f"New group '{group_name}' — early chaos detected."
+        summary = f"New group '{group_name}' — Develop understanding of the group direction and log interesting details that can be used for roast strikes."
         group_memory_cache.set(group_name, summary)
         return summary
-    
+
     old_summary = group_memory_cache.get(group_name) or ""
     recent = [f"{m.get('sender','')}: {m.get('content','')}" for m in raw_history[-25:]]
-    prompt_system = "You are PSI-09. Merge the old group summary. Describe dominant personalities, running jokes, conflicts, and repeated patterns in 1-2 sentences."
-    prompt = [{"role": "system", "content": prompt_system}] + [{"role": "user", "content": f"Old: {old_summary}\nRecent: {t}"} for t in recent]
-    
+    prompt_system = "You are PSI-09. Merge the old group summary. Describe dominant personalities and characters, running dialogues, conflicts, and thought patterns in 1-2 sentences that can be used for precision roasting."
+
+    prompt = [{"role": "system", "content": prompt_system}] + [{"role": "user", "content": t} for t in recent]
+
     try:
         resp = client.chat.completions.create(
             model=config.MODEL,
@@ -480,17 +405,17 @@ def summarize_group_history(group_name, raw_history):
             temperature=1.0,
             timeout=6
         )
-        new_summary = (resp.choices[0].message.content or "").strip()
+        new_summary = resp.choices[0].message.content.strip()
     except Exception as e:
         logger.warning(f"Group summarization failed for {group_name}: {e}")
         new_summary = old_summary
-    
+
     if new_summary and new_summary != old_summary:
         try:
             group_memory_cache.set(group_name, new_summary)
         except Exception:
             pass
-    
+
     return new_summary or old_summary
 
 # ---------------------------
@@ -520,17 +445,17 @@ def background_summarizer_loop():
                 if _pending_group_summaries:
                     pending_groups = list(_pending_group_summaries)
                     _pending_group_summaries.clear()
-            
+
             # Process user summaries
             for user_key in pending_users:
                 try:
                     raw, _ = fetch_history(user_key, limit_messages=config.MAX_HISTORY_MESSAGES, max_tokens=config.MAX_HISTORY_TOKENS)
-                    if raw:
+                    if raw and len(raw) >= 3:
                         summarize_user_history(user_key, raw)
                         memory_cache.reset_count(user_key)
                 except Exception as e:
-                    logger.error(f"Background user summarization failed for {user_key}: {e}")
-            
+                    logger.debug(f"Background user summarization failed for {user_key}: {e}")
+
             # Process group summaries
             for group_name in pending_groups:
                 try:
@@ -539,10 +464,11 @@ def background_summarizer_loop():
                         summarize_group_history(group_name, raw)
                         group_memory_cache.reset_count(group_name)
                 except Exception as e:
-                    logger.error(f"Background group summarization failed for {group_name}: {e}")
+                    logger.debug(f"Background group summarization failed for {group_name}: {e}")
+
         except Exception as e:
-            logger.error(f"Background summarizer top-level exception: {e}")
-        
+            logger.debug(f"Background summarizer top-level exception: {e}")
+
         # Sleep interval — tuned so it doesn't hammer DB or cause cost spikes
         time.sleep(5)
 
@@ -552,30 +478,12 @@ threading.Thread(target=background_summarizer_loop, daemon=True).start()
 # ---------------------------
 # Mention detection helper
 # ---------------------------
+# Robust detection: match standalone BOT_NUMBER with optional surrounding punctuation/whitespace
 def bot_mentioned_in(text: str) -> bool:
-    """Robust detection: match standalone BOT_NUMBER with optional surrounding punctuation/whitespace"""
-    if not text or not config.BOT_NUMBER:
+    if not text:
         return False
-    
-    try:
-        pattern = r"(?<!\S)" + re.escape(config.BOT_NUMBER) + r"(?!\S)"
-        return re.search(pattern, text, flags=re.IGNORECASE) is not None
-    except re.error as e:
-        logger.error(f"Regex error in bot_mentioned_in: {e}")
-        return False
-
-def clean_bot_mention(text: str) -> str:
-    """Remove bot mention from text"""
-    if not text or not config.BOT_NUMBER:
-        return text
-    
-    try:
-        pattern = r"(?<!\S)" + re.escape(config.BOT_NUMBER) + r"(?!\S)"
-        cleaned = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
-        return cleaned if cleaned else "[bot_mention]"
-    except re.error as e:
-        logger.error(f"Regex error in clean_bot_mention: {e}")
-        return text
+    pattern = r"(?<!\S)" + re.escape(config.BOT_NUMBER) + r"(?!\S)"
+    return re.search(pattern, text, flags=re.IGNORECASE) is not None
 
 # ---------------------------
 # Core roast generation with token-budget enforcement
@@ -594,21 +502,21 @@ def get_roast_response(user_message, group_name, sender_name):
                 temperature=1.2,
                 timeout=6
             )
-            return (resp.choices[0].message.content or "").strip()
+            return resp.choices[0].message.content.strip()
         except Exception as e:
             logger.error(f"Status generation error: {e}")
             return ""
-    
+
     user_key = f"{group_name}:{sender_name}"
-    
+
     # Fetch user history (trimmed)
     raw_user, trimmed_user = fetch_history(user_key, limit_messages=config.MAX_HISTORY_MESSAGES, max_tokens=config.MAX_HISTORY_TOKENS)
-    
+
     # Lazy user summarization decision:
     user_memory = memory_cache.get(user_key)
-    if (not user_memory and len(raw_user) >= 1) or memory_cache.should_summary(user_key):
+    if (not user_memory and len(raw_user) >= 3) or memory_cache.should_summary(user_key):
         enqueue_user_summary(user_key)
-    
+
     # Fetch group history and group memory
     if group_name != "DefaultGroup":
         raw_group, trimmed_group = fetch_group_history(group_name, limit_messages=config.GROUP_HISTORY_SLICE, max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT)
@@ -618,7 +526,7 @@ def get_roast_response(user_message, group_name, sender_name):
     else:
         raw_group, trimmed_group = [], []
         group_memory = ""
-    
+
     # Build system memory text
     sys_parts = []
     if user_memory:
@@ -626,36 +534,24 @@ def get_roast_response(user_message, group_name, sender_name):
     if group_memory:
         sys_parts.append(f"GroupMemory: {group_memory}")
     system_memory_text = "\n".join(sys_parts) if sys_parts else ""
-    
-    # Calculate token budgets correctly
-    system_prompt = GROUP_ROAST_PROMPT if group_name != "DefaultGroup" else ROAST_PROMPT
-    prompt_tokens = tokens_of(system_prompt)
-    memory_tokens = tokens_of(system_memory_text)
-    
-    # Total system tokens used
-    total_system_tokens = prompt_tokens + memory_tokens
-    
-    # Remaining budget for history (ensure we don't exceed total budget)
-    remaining_tokens_for_history = max(100, config.MAX_HISTORY_TOKENS - memory_tokens)
-    
-    # Trim user history to fit remaining budget
+
+    sys_tokens = tokens_of(system_memory_text) + tokens_of(ROAST_PROMPT)
+    remaining_tokens_for_history = max(100, config.MAX_HISTORY_TOKENS - sys_tokens)
     trimmed_user = trim_messages_to_token_budget(trimmed_user, remaining_tokens_for_history)
-    
+
     # Build final messages
+    system_prompt = GROUP_ROAST_PROMPT if group_name != "DefaultGroup" else ROAST_PROMPT
     messages = [{"role": "system", "content": system_prompt}]
     if system_memory_text:
         messages.append({"role": "system", "content": system_memory_text})
-    
     for m in trimmed_user:
         messages.append({"role": m.get("role", "user"), "content": m.get("content", "")})
-    
     messages.append({"role": "user", "content": user_message})
-    
-    # OpenAI retry loop with exponential backoff
+
+    # OpenAI retry loop
     retries = config.OPENAI_RETRIES
     backoff = 1
     base_reply = None
-    
     while retries > 0:
         try:
             resp = client.chat.completions.create(
@@ -665,14 +561,8 @@ def get_roast_response(user_message, group_name, sender_name):
                 temperature=random.uniform(1.15, 1.35),
                 timeout=config.OPENAI_TIMEOUT
             )
-            # Safe extraction with null check
-            base_reply = (resp.choices[0].message.content or "").strip()
-            if base_reply:
-                break
-            else:
-                logger.warning(f"Empty response from OpenAI for {user_key}")
-                base_reply = "PSI-09 neural cortex temporarily offline."
-                break
+            base_reply = resp.choices[0].message.content.strip()
+            break
         except Exception as e:
             retries -= 1
             logger.warning(f"OpenAI call failed for {user_key}: {e}. Retries left: {retries}")
@@ -682,14 +572,14 @@ def get_roast_response(user_message, group_name, sender_name):
                 break
             time.sleep(backoff)
             backoff = min(backoff * 2, 16)
-    
+
     # Safely clean formatting and write to history (cannot fail)
     try:
         clean_reply = re.sub(r"\s{3,}", " ", base_reply or "").strip()
     except Exception as e:
         logger.warning(f"Cleaning reply failed for {user_key}: {e}")
         clean_reply = "PSI-09 neural cortex temporarily offline."
-    
+
     try:
         history_col.update_one(
             {"_id": user_key},
@@ -698,7 +588,7 @@ def get_roast_response(user_message, group_name, sender_name):
         )
     except PyMongoError as e:
         logger.warning(f"Failed to write assistant reply to history for {user_key}: {e}")
-    
+
     return clean_reply
 
 # ---------------------------
@@ -715,65 +605,62 @@ def psi09():
         if not isinstance(data, dict):
             logger.warning("Malformed JSON payload")
             return jsonify({"reply": ""}), 400
-        
+
         user_message = data.get("message", "")
         sender_name = data.get("sender", "")
         group_name = data.get("group_name") or "DefaultGroup"
-        
+
         logger.info(f"Incoming: sender={sender_name}, group={group_name}, message={(user_message[:120] + '...') if len(user_message) > 120 else user_message}")
-        
+
         if not user_message or not sender_name:
             return jsonify({"reply": ""}), 200
-        
+
         # Special direct status calls (bypass history)
         if isinstance(sender_name, str) and sender_name.upper().startswith("PSI09_STATUS"):
             reply = get_roast_response(user_message, group_name, sender_name)
             return jsonify({"reply": reply}), 200
-        
-        # Clean bot mention BEFORE storing to ensure consistency
-        original_message = user_message
-        is_bot_mentioned = bot_mentioned_in(user_message)
-        if is_bot_mentioned:
-            user_message = clean_bot_mention(user_message)
-        
-        # Always store both user and group messages with cleaned message
+
+        # Always store both user and group messages (for group awareness)
         try:
             store_user_message(group_name, sender_name, user_message)
             if group_name != "DefaultGroup":
                 store_group_message(group_name, sender_name, user_message)
         except Exception as e:
             logger.warning(f"Storage attempt failed: {e}")
-        
+
         # Update counters and enqueue background summaries if needed
         user_key = f"{group_name}:{sender_name}"
         ucount = memory_cache.increment(user_key)
-        if memory_cache.should_summary(user_key):
+        if ucount >= config.SUMMARIZE_EVERY_N_MESSAGES:
             enqueue_user_summary(user_key)
-        
+
         if group_name != "DefaultGroup":
             gcount = group_memory_cache.increment(group_name)
-            if group_memory_cache.should_summary(group_name):
+            if gcount >= config.SUMMARIZE_EVERY_N_MESSAGES:
                 enqueue_group_summary(group_name)
-        
+
         # Decide whether to reply:
         # - Always reply for direct/private (DefaultGroup)
         # - For group chats, reply only if bot is mentioned
-        should_reply = (group_name == "DefaultGroup") or is_bot_mentioned
-        
+        should_reply = (group_name == "DefaultGroup") or bot_mentioned_in(user_message)
         if not should_reply:
             logger.debug("Bot not mentioned; skipping reply")
             return jsonify({"reply": ""}), 200
-        
-        # Generate roast (message is already cleaned if bot was mentioned)
+
+        # If mentioned, clean mention from the message (so prompt sees user text)
+        if bot_mentioned_in(user_message):
+            user_message = re.sub(r"(?<!\S)"+re.escape(config.BOT_NUMBER)+r"(?!\S)", "", user_message, flags=re.IGNORECASE).strip() or "[bot_mention]"
+
+        # Generate roast
         try:
             reply = get_roast_response(user_message, group_name, sender_name)
             logger.info(f"Reply generated for {group_name}:{sender_name} -> {(reply[:120] + '...') if len(reply) > 120 else reply}")
         except Exception as e:
             logger.exception(f"Failed to generate roast: {e}")
             reply = "PSI-09 neural cortex temporarily offline."
-        
+
         return jsonify({"reply": reply}), 200
-    
+
     except Exception as e:
         logger.exception(f"Unhandled exception in /psi09: {e}")
         return jsonify({"reply": "Internal error occurred"}), 500
@@ -800,3 +687,4 @@ if __name__ == "__main__":
     log = logging.getLogger("werkzeug")
     log.setLevel(logging.ERROR)
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+
