@@ -206,6 +206,11 @@ _pending_user_summaries = set()
 _pending_group_summaries = set()
 _pending_lock = threading.Lock()
 
+# cooldown trackers to avoid re-summarizing the same key repeatedly
+_last_user_summary_time = {}
+_last_group_summary_time = {}
+SUMMARY_COOLDOWN_SECONDS = 60  # per-user/group cooldown between background summarizations
+
 # ---------------------------
 # Prompts (unchanged core text)
 # ---------------------------
@@ -345,11 +350,10 @@ def summarize_user_history(user_key, raw_history):
 
     # First-contact special case: require >=3 messages before performing expensive first-contact summary
     if len(raw_history) < 3:
-        # do not call OpenAI here unless explicitly desired; return empty or DB value to avoid waste
+        # keep original early-contact behavior (write small summary)
         existing = memory_cache.get(user_key)
         if existing:
             return existing
-        # if no existing summary and few messages, craft a tiny local summary (cheap)
         candidate = raw_history[0].get("content", "")[:200]
         short = f"Early contact: {candidate}"
         memory_cache.set(user_key, short)
@@ -429,6 +433,22 @@ def enqueue_group_summary(group_name):
     with _pending_lock:
         _pending_group_summaries.add(group_name)
 
+def _can_run_user_summary(user_key):
+    now = time.time()
+    last = _last_user_summary_time.get(user_key, 0)
+    return (now - last) >= SUMMARY_COOLDOWN_SECONDS
+
+def _record_user_summary_time(user_key):
+    _last_user_summary_time[user_key] = time.time()
+
+def _can_run_group_summary(group_name):
+    now = time.time()
+    last = _last_group_summary_time.get(group_name, 0)
+    return (now - last) >= SUMMARY_COOLDOWN_SECONDS
+
+def _record_group_summary_time(group_name):
+    _last_group_summary_time[group_name] = time.time()
+
 def background_summarizer_loop():
     """
     Periodically processes pending user and group summaries in the background.
@@ -441,6 +461,7 @@ def background_summarizer_loop():
             with _pending_lock:
                 if _pending_user_summaries:
                     pending_users = list(_pending_user_summaries)
+                    # clear the set; we'll re-add keys that we skip due to cooldown
                     _pending_user_summaries.clear()
                 if _pending_group_summaries:
                     pending_groups = list(_pending_group_summaries)
@@ -449,28 +470,56 @@ def background_summarizer_loop():
             # Process user summaries
             for user_key in pending_users:
                 try:
+                    # respect per-user cooldown
+                    if not _can_run_user_summary(user_key):
+                        # re-enqueue for future processing
+                        with _pending_lock:
+                            _pending_user_summaries.add(user_key)
+                        continue
+
                     raw, _ = fetch_history(user_key, limit_messages=config.MAX_HISTORY_MESSAGES, max_tokens=config.MAX_HISTORY_TOKENS)
                     if raw and len(raw) >= 3:
                         summarize_user_history(user_key, raw)
                         memory_cache.reset_count(user_key)
+                        _record_user_summary_time(user_key)
+                    else:
+                        # If early contact summary behavior writes a short summary for <3 messages,
+                        # keep that as intended (original behaviour).
+                        if raw and len(raw) < 3:
+                            summarize_user_history(user_key, raw)
+                            memory_cache.reset_count(user_key)
+                            _record_user_summary_time(user_key)
                 except Exception as e:
                     logger.debug(f"Background user summarization failed for {user_key}: {e}")
 
             # Process group summaries
             for group_name in pending_groups:
                 try:
+                    # respect per-group cooldown
+                    if not _can_run_group_summary(group_name):
+                        with _pending_lock:
+                            _pending_group_summaries.add(group_name)
+                        continue
+
                     raw, _ = fetch_group_history(group_name, limit_messages=config.GROUP_HISTORY_SLICE, max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT)
                     if raw and len(raw) >= 6:
                         summarize_group_history(group_name, raw)
                         group_memory_cache.reset_count(group_name)
+                        _record_group_summary_time(group_name)
+                    else:
+                        # keep original small-group behaviour for <6 messages
+                        if raw and len(raw) < 6:
+                            summarize_group_history(group_name, raw)
+                            group_memory_cache.reset_count(group_name)
+                            _record_group_summary_time(group_name)
                 except Exception as e:
                     logger.debug(f"Background group summarization failed for {group_name}: {e}")
 
         except Exception as e:
             logger.debug(f"Background summarizer top-level exception: {e}")
 
-        # Sleep interval — tuned so it doesn't hammer DB or cause cost spikes
-        time.sleep(5)
+        # Sleep interval — increased slightly to avoid too-frequent sweeps
+        time.sleep(12)
 
 # start background summarizer
 threading.Thread(target=background_summarizer_loop, daemon=True).start()
@@ -512,23 +561,22 @@ def get_roast_response(user_message, group_name, sender_name):
     # Fetch user history (trimmed)
     raw_user, trimmed_user = fetch_history(user_key, limit_messages=config.MAX_HISTORY_MESSAGES, max_tokens=config.MAX_HISTORY_TOKENS)
 
-    # Lazy user summarization decision:
-    user_memory = memory_cache.get(user_key)
-    if (not user_memory and len(raw_user) >= 3) or memory_cache.should_summary(user_key):
-        enqueue_user_summary(user_key)
+    # NOTE: Removed the duplicate enqueue from here.
+    # Summarization is enqueued from the /psi09 request handler via message counters,
+    # and background summarizer processes pending sets with cooldowns.
 
     # Fetch group history and group memory
     if group_name != "DefaultGroup":
         raw_group, trimmed_group = fetch_group_history(group_name, limit_messages=config.GROUP_HISTORY_SLICE, max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT)
         group_memory = group_memory_cache.get(group_name)
-        if len(raw_group) >= 6 and (not group_memory or group_memory_cache.should_summary(group_name)):
-            enqueue_group_summary(group_name)
+        # keep original behavior: we do not block group summarization here; background summarizer handles enqueueing
     else:
         raw_group, trimmed_group = [], []
         group_memory = ""
 
     # Build system memory text
     sys_parts = []
+    user_memory = memory_cache.get(user_key)
     if user_memory:
         sys_parts.append(f"UserMemory: {user_memory}")
     if group_memory:
@@ -542,10 +590,30 @@ def get_roast_response(user_message, group_name, sender_name):
     # Build final messages
     system_prompt = GROUP_ROAST_PROMPT if group_name != "DefaultGroup" else ROAST_PROMPT
     messages = [{"role": "system", "content": system_prompt}]
+
     if system_memory_text:
         messages.append({"role": "system", "content": system_memory_text})
+
+    # NEW: inject only the last 20 group messages (if any) to avoid excessively long injected histories
+    if group_name != "DefaultGroup" and trimmed_group:
+        # ensure we include the last 20 entries (chronological order)
+        last_20 = trimmed_group[-20:] if len(trimmed_group) > 20 else trimmed_group
+        for entry in last_20:
+            sender = entry.get("sender", "unknown")
+            content = entry.get("content", "")
+            messages.append({
+                "role": "user",
+                "content": f"{sender}: {content}"
+            })
+
+    # user-specific messages (private history)
     for m in trimmed_user:
-        messages.append({"role": m.get("role", "user"), "content": m.get("content", "")})
+        messages.append({
+            "role": m.get("role", "user"),
+            "content": m.get("content", "")
+        })
+
+    # triggering message (after mention cleaning)
     messages.append({"role": "user", "content": user_message})
 
     # OpenAI retry loop
