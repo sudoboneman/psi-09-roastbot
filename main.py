@@ -42,7 +42,7 @@ class Config:
     MAX_HISTORY_TOKENS: int = 1200           # total token budget (history + small system memory)
     MAX_SYSTEM_TOKENS: int = 350             # reserve for system memory (prompts + memories)
     MAX_HISTORY_MESSAGES: int = 30
-    BOT_NUMBER: str = "@918100185320"
+    BOT_NUMBER: str = os.getenv("BOT_NUMBER")
     MEMORY_TTL: int = 300
     SUMMARIZE_EVERY_N_MESSAGES: int = 10
     OPENAI_RETRIES: int = 3
