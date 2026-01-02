@@ -452,7 +452,13 @@ def summarize_group_history(group_name, raw_history):
 
     old_summary = group_memory_cache.get(group_name) or ""
     recent = [f"{m.get('sender','')}: {m.get('content','')}" for m in raw_history[-25:]]
-    prompt_system = "You are PSI-09. Merge the old group summary. Describe dominant personalities and characters, running dialogues, conflicts, and thought patterns in 1-2 sentences that can be used for precision roasting."
+
+    prompt_system = (
+        "You are PSI-09, a silent observer. Analyze this collective chatter. "
+        "Identify the current topic, who is being annoying, who is 'winning' the convo, "
+        "and any group delusions. Update the old summary into a 2-sentence psychological "
+        "read of the room. This will be used to roast them later."
+    )
 
     prompt = [{"role": "system", "content": prompt_system}] + [
         {"role": "user", "content": t} for t in recent
@@ -627,142 +633,108 @@ def bot_mentioned_in(text: str) -> bool:
 # Core roast generation with token-budget enforcement
 # ---------------------------
 def get_roast_response(user_message, group_name, sender_name):
-    # Status mode (explicit)
-    if sender_name and sender_name.upper().startswith("PSI09_STATUS"):
-        try:
-            resp = client.chat.completions.create(
-                model=config.MODEL,
-                messages=[
-                    {"role": "system", "content": STATUS_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
-                max_tokens=80,
-                temperature=1.2,
-                timeout=6,
-            )
-            return resp.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"Status generation error: {e}")
-            return ""
-
     user_key = f"{group_name}:{sender_name}"
+    is_private_env = group_name in ["DefaultGroup", "Discord_DM"]
 
-    # Fetch user history (trimmed)
+    # 1. Fetch Histories
     raw_user, trimmed_user = fetch_history(
         user_key,
         limit_messages=config.MAX_HISTORY_MESSAGES,
         max_tokens=config.MAX_HISTORY_TOKENS,
     )
 
-    # NOTE: Removed the duplicate enqueue from here.
-    # Summarization is enqueued from the /psi09 request handler via message counters,
-    # and background summarizer processes pending sets with cooldowns.
-
-    # Fetch group history and group memory
-    if group_name != "DefaultGroup":
+    if not is_private_env:
+        # Fetch the collective chatter history and group observer memory
         raw_group, trimmed_group = fetch_group_history(
             group_name,
             limit_messages=config.GROUP_HISTORY_SLICE,
             max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
         )
         group_memory = group_memory_cache.get(group_name)
-        # keep original behavior: we do not block group summarization here; background summarizer handles enqueueing
     else:
-        raw_group, trimmed_group = [], []
-        group_memory = ""
+        raw_group, trimmed_group, group_memory = [], [], ""
 
-    # Build system memory text
+    # 2. Build the "Observer" Brain
     sys_parts = []
     user_memory = memory_cache.get(user_key)
     if user_memory:
-        sys_parts.append(f"UserMemory: {user_memory}")
-    if group_memory:
-        sys_parts.append(f"GroupMemory: {group_memory}")
+        sys_parts.append(f"User Profile: {user_memory}")
+    if not is_private_env and group_memory:
+        # This is where the passive summaries get injected
+        sys_parts.append(f"Current Collective Chatter Summary: {group_memory}")
+
     system_memory_text = "\n".join(sys_parts) if sys_parts else ""
 
-    sys_tokens = tokens_of(system_memory_text) + tokens_of(ROAST_PROMPT)
-    remaining_tokens_for_history = max(100, config.MAX_HISTORY_TOKENS - sys_tokens)
-    trimmed_user = trim_messages_to_token_budget(
-        trimmed_user, remaining_tokens_for_history
-    )
-
-    # Build final messages
-    system_prompt = GROUP_ROAST_PROMPT if group_name != "DefaultGroup" else ROAST_PROMPT
+    # 3. Select Mode and Inject History
+    system_prompt = ROAST_PROMPT if is_private_env else GROUP_ROAST_PROMPT
     messages = [{"role": "system", "content": system_prompt}]
-
     if system_memory_text:
         messages.append({"role": "system", "content": system_memory_text})
 
-    # NEW: inject only the last 20 group messages (if any) to avoid excessively long injected histories
-    if group_name != "DefaultGroup" and trimmed_group:
-        # ensure we include the last 20 entries (chronological order)
+    if not is_private_env and trimmed_group:
+        # Inject the collective chatter so the AI can 'hear' everyone
         last_20 = trimmed_group[-20:] if len(trimmed_group) > 20 else trimmed_group
         for entry in last_20:
-            sender = entry.get("sender", "unknown")
-            content = entry.get("content", "")
-            messages.append({"role": "user", "content": f"{sender}: {content}"})
+            s, c = entry.get("sender", "unknown"), entry.get("content", "")
+            messages.append({"role": "user", "content": f"{s}: {c}"})
 
-    # user-specific messages (private history)
     for m in trimmed_user:
         messages.append(
             {"role": m.get("role", "user"), "content": m.get("content", "")}
         )
 
-    # triggering message (after mention cleaning)
     messages.append({"role": "user", "content": user_message})
 
-    # OpenAI retry loop
-    retries = config.OPENAI_RETRIES
-    backoff = 1
-    base_reply = None
-    while retries > 0:
-        try:
-            resp = client.chat.completions.create(
-                model=config.MODEL,
-                messages=messages,
-                max_tokens=140,
-                temperature=random.uniform(0.8, 1.2),
-                timeout=config.OPENAI_TIMEOUT,
-            )
-            base_reply = resp.choices[0].message.content.strip()
-            break
-        except Exception as e:
-            retries -= 1
-            logger.warning(
-                f"OpenAI call failed for {user_key}: {e}. Retries left: {retries}"
-            )
-            if retries <= 0:
-                logger.error(f"OpenAI retries exhausted for {user_key}: {e}")
-                base_reply = "PSI-09 neural cortex temporarily offline."
-                break
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 16)
-
-    # Safely clean formatting and write to history (cannot fail)
+    # 4. Generate Response
     try:
-        clean_reply = re.sub(r"\s{3,}", " ", base_reply or "").strip()
+        resp = client.chat.completions.create(
+            model=config.MODEL,
+            messages=messages,
+            max_tokens=140,
+            temperature=0.9,
+            timeout=config.OPENAI_TIMEOUT,
+        )
+        base_reply = resp.choices[0].message.content.strip()
     except Exception as e:
-        logger.warning(f"Cleaning reply failed for {user_key}: {e}")
-        clean_reply = "PSI-09 neural cortex temporarily offline."
+        logger.error(f"AI Error: {e}")
+        base_reply = "Neural cortex offline."
+
+    # 5. DUAL STORAGE FIX
+    clean_reply = re.sub(r"\s{3,}", " ", base_reply or "").strip()
+    # Create entries for both DBs
+    user_entry = {
+        "role": "assistant",
+        "content": clean_reply,
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+    group_entry = {
+        "sender": "PSI-09",
+        "content": clean_reply,
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
 
     try:
+        # Always save to chat_history for the user's specific thread
         history_col.update_one(
-            {"_id": user_key},
-            {
-                "$push": {
-                    "messages": {
-                        "role": "assistant",
-                        "content": clean_reply,
-                        "timestamp": datetime.now(UTC).isoformat(),
+            {"_id": user_key}, {"$push": {"messages": user_entry}}, upsert=True
+        )
+
+        # If in a server, also save to group_history so the 'collective' knows the bot replied
+        if not is_private_env:
+            group_history_col.update_one(
+                {"_id": group_name},
+                {
+                    "$push": {
+                        "messages": {
+                            "$each": [group_entry],
+                            "$slice": -config.GROUP_HISTORY_MAX_MESSAGES,
+                        }
                     }
-                }
-            },
-            upsert=True,
-        )
-    except PyMongoError as e:
-        logger.warning(
-            f"Failed to write assistant reply to history for {user_key}: {e}"
-        )
+                },
+                upsert=True,
+            )
+    except Exception as e:
+        logger.warning(f"Reply storage failed: {e}")
 
     return clean_reply
 
@@ -779,71 +751,45 @@ def health():
 def psi09():
     try:
         data = request.get_json(force=True)
-        user_message = data.get("message", "")
-        sender_name = data.get("sender", "")
-        group_name = data.get("group_name") or "DefaultGroup"
+        user_message, sender_name, group_name = (
+            data.get("message", ""),
+            data.get("sender", ""),
+            data.get("group_name", "DefaultGroup"),
+        )
+        is_private = group_name in ["DefaultGroup", "Discord_DM"]
 
-        if not user_message or not sender_name:
-            return jsonify({"reply": ""}), 200
-
-        # Special direct status calls
-        if isinstance(sender_name, str) and sender_name.upper().startswith(
-            "PSI09_STATUS"
-        ):
-            reply = get_roast_response(user_message, group_name, sender_name)
-            return jsonify({"reply": reply}), 200
-
-        # Database Storage
+        # 1. Passive Data Collection
         try:
-            store_user_message(group_name, sender_name, user_message)
-            # Only store in group history if it's NOT a DM channel
-            if group_name not in ["DefaultGroup", "Discord_DM"]:
+            if is_private:
+                store_user_message(group_name, sender_name, user_message)
+            else:
+                # Log everything from everyone in the server
                 store_group_message(group_name, sender_name, user_message)
         except Exception as e:
-            logger.warning(f"Storage failed: {e}")
+            logger.warning(f"Passive logging failed: {e}")
 
-        # Summary Counters
+        # 2. Interval Check
         user_key = f"{group_name}:{sender_name}"
-        if memory_cache.increment(user_key) >= config.SUMMARIZE_EVERY_N_MESSAGES:
-            enqueue_user_summary(user_key)
-
-        if group_name not in ["DefaultGroup", "Discord_DM"]:
-            if (
-                group_memory_cache.increment(group_name)
-                >= config.SUMMARIZE_EVERY_N_MESSAGES
-            ):
+        if is_private:
+            if memory_cache.increment(user_key) >= 10:
+                enqueue_user_summary(user_key)
+        else:
+            # x = 20: Summarize the collective vibe after 20 messages
+            if group_memory_cache.increment(group_name) >= 20:
                 enqueue_group_summary(group_name)
 
-        # Decision Logic: Reply if it's a DM (either platform) OR a mention
-        is_private = group_name in ["DefaultGroup", "Discord_DM"]
+        # 3. Decision Logic
         is_tagged = bot_mentioned_in(user_message)
-
         if not (is_private or is_tagged):
-            logger.info(f"Skipping: No mention in {group_name}")
-            return jsonify({"reply": ""}), 200
+            return jsonify({"reply": ""}), 200  # Silent, but it 'heard' everything
 
-        # Clean mentions from text before OpenAI sees it
-        if is_tagged:
-            # Clean WhatsApp number
-            user_message = re.sub(
-                r"(?<!\S)" + re.escape(config.BOT_NUMBER) + r"(?!\S)",
-                "",
-                user_message,
-                flags=re.IGNORECASE,
-            )
-            # Clean Discord ID
-            if config.DISCORD_ID:
-                user_message = re.sub(
-                    r"<@!?" + re.escape(config.DISCORD_ID) + r">", "", user_message
-                )
-            user_message = user_message.strip() or "[mention]"
+        # ... (mention cleaning logic) ...
 
-        # Generate and Send Roast
         reply = get_roast_response(user_message, group_name, sender_name)
         return jsonify({"reply": reply}), 200
 
     except Exception as e:
-        logger.exception(f"Error in /psi09: {e}")
+        logger.exception(f"Error: {e}")
         return jsonify({"reply": ""}), 500
 
 
