@@ -615,17 +615,14 @@ threading.Thread(target=background_summarizer_loop, daemon=True).start()
 def bot_mentioned_in(text: str) -> bool:
     if not text:
         return False
-
-    # WhatsApp Detection
-    wa_pattern = r"(?<!\S)" + re.escape(config.BOT_NUMBER) + r"(?!\S)"
-    is_wa_mention = re.search(wa_pattern, text, flags=re.IGNORECASE) is not None
-
-    # Discord Detection (matches <@ID> and <@!ID>)
+    # Discord Detection: Matches <@ID> and <@!ID>
     is_discord_mention = False
     if config.DISCORD_ID:
         discord_pattern = r"<@!?" + re.escape(config.DISCORD_ID) + r">"
         is_discord_mention = re.search(discord_pattern, text) is not None
 
+    wa_pattern = r"(?<!\S)" + re.escape(config.BOT_NUMBER) + r"(?!\S)"
+    is_wa_mention = re.search(wa_pattern, text, flags=re.IGNORECASE) is not None
     return is_wa_mention or is_discord_mention
 
 
@@ -751,11 +748,13 @@ def health():
 def psi09():
     try:
         data = request.get_json(force=True)
-        user_message, sender_name, group_name = (
-            data.get("message", ""),
-            data.get("sender", ""),
-            data.get("group_name", "DefaultGroup"),
-        )
+        user_message = data.get("message", "")
+        sender_name = data.get("sender", "")
+        group_name = data.get("group_name") or "DefaultGroup"
+
+        if not user_message or not sender_name:
+            return jsonify({"reply": ""}), 200
+
         is_private = group_name in ["DefaultGroup", "Discord_DM"]
 
         # 1. Passive Data Collection
@@ -763,10 +762,9 @@ def psi09():
             if is_private:
                 store_user_message(group_name, sender_name, user_message)
             else:
-                # Log everything from everyone in the server
                 store_group_message(group_name, sender_name, user_message)
         except Exception as e:
-            logger.warning(f"Passive logging failed: {e}")
+            logger.warning(f"Storage failed: {e}")
 
         # 2. Interval Check
         user_key = f"{group_name}:{sender_name}"
@@ -774,27 +772,39 @@ def psi09():
             if memory_cache.increment(user_key) >= 10:
                 enqueue_user_summary(user_key)
         else:
-            # x = 20: Summarize the collective vibe after 20 messages
             if group_memory_cache.increment(group_name) >= 20:
                 enqueue_group_summary(group_name)
 
         # 3. Decision Logic
         is_tagged = bot_mentioned_in(user_message)
-        if not (is_private or is_tagged):
-            return jsonify({"reply": ""}), 200  # Silent, but it 'heard' everything
 
-        if is_tagged:
+        if is_private or is_tagged:
+            # --- MANDATORY CLEANING FOR GROUPS ---
+            # Strip the raw Discord ID tags so the AI sees clean text
             if config.DISCORD_ID:
                 user_message = re.sub(
                     r"<@!?" + re.escape(config.DISCORD_ID) + r">", "", user_message
                 )
+
+            # Strip WhatsApp numbers if applicable
+            user_message = re.sub(
+                r"(?<!\S)" + re.escape(config.BOT_NUMBER) + r"(?!\S)",
+                "",
+                user_message,
+                flags=re.IGNORECASE,
+            )
+
             user_message = user_message.strip() or "[mention]"
 
-        reply = get_roast_response(user_message, group_name, sender_name)
-        return jsonify({"reply": reply}), 200
+            # Generate and return the roast
+            reply = get_roast_response(user_message, group_name, sender_name)
+            return jsonify({"reply": reply}), 200
+        else:
+            # Silent observation
+            return jsonify({"reply": ""}), 200
 
     except Exception as e:
-        logger.exception(f"Error: {e}")
+        logger.exception(f"Error in /psi09: {e}")
         return jsonify({"reply": ""}), 500
 
 
