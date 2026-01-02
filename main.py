@@ -46,7 +46,7 @@ class Config:
     BOT_NUMBER: str = os.getenv("BOT_NUMBER")
     DISCORD_ID: str = os.getenv("DISCORD_ID")
     MEMORY_TTL: int = 300
-    SUMMARIZE_EVERY_N_MESSAGES: int = 10
+    SUMMARIZE_EVERY_N_MESSAGES: int = 20
     OPENAI_RETRIES: int = 3
     OPENAI_TIMEOUT: int = 8
     GROUP_HISTORY_SLICE: int = 80
