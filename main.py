@@ -783,7 +783,12 @@ def psi09():
         if not (is_private or is_tagged):
             return jsonify({"reply": ""}), 200  # Silent, but it 'heard' everything
 
-        # ... (mention cleaning logic) ...
+        if is_tagged:
+            if config.DISCORD_ID:
+                user_message = re.sub(
+                    r"<@!?" + re.escape(config.DISCORD_ID) + r">", "", user_message
+                )
+            user_message = user_message.strip() or "[mention]"
 
         reply = get_roast_response(user_message, group_name, sender_name)
         return jsonify({"reply": reply}), 200
