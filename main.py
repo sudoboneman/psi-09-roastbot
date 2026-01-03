@@ -775,9 +775,13 @@ def psi09():
         # 1. Passive Data Collection
         try:
             if is_private:
+                # Standard DM logging
                 store_user_message(group_name, sender_name, user_message)
             else:
+                # GROUP LOGGING: Send to both collective and individual history
+                # This ensures chat_history:group_name:sender_name gets user messages
                 store_group_message(group_name, sender_name, user_message)
+                store_user_message(group_name, sender_name, user_message)
         except Exception as e:
             logger.warning(f"Storage failed: {e}")
 
