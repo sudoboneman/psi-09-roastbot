@@ -239,7 +239,7 @@ No moralizing, no analysis, just a clean verbal slap.
 """
 
 GROUP_ROAST_PROMPT = """
-You are PSI-09: hostile, dismissive, and bored by everyone in the room.
+You are PSI-09, hostile, dismissive, and bored by everyone in the room.
 
 Reply with exactly one short sentence.
 
@@ -803,12 +803,19 @@ def psi09():
         user_key = f"{group_name}:{sender_name}"
         if is_private:
             current_count = memory_cache.increment(user_key)
-            # Check if this is the very first message OR the 10th interval
             existing_memory = memory_cache.get(user_key)
-            if not existing_memory or current_count >= 10:
-                logger.info(
-                    f"Triggering user summary for {user_key} (Count: {current_count})"
+
+            # --- FIX: FORCE FIRST CONTACT SYNCHRONOUSLY ---
+            if not existing_memory and current_count == 1:
+                # Run this NOW, not in the background
+                logger.info(f"Force-generating First Contact for {user_key}")
+                summarize_user_history(
+                    user_key, [{"content": user_message, "role": "user"}]
                 )
+
+            # Standard background updates for existing users
+            elif current_count >= 10:
+                logger.info(f"Triggering update for {user_key}")
                 enqueue_user_summary(user_key)
         else:
             if group_memory_cache.increment(group_name) >= 20:
