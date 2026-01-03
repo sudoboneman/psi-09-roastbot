@@ -393,52 +393,65 @@ def store_group_message(group_name, sender_name, message):
 # Summarization functions (user & group)
 # ---------------------------
 def summarize_user_history(user_key, raw_history):
-    """
-    Generates or refreshes a short user summary. Safe fallback on failure.
-    This function is safe to call from background threads.
-    """
     if not raw_history:
         return memory_cache.get(user_key)
 
-    # First-contact special case: require >=3 messages before performing expensive first-contact summary
-    if len(raw_history) < 3:
-        # keep original early-contact behavior (write small summary)
-        existing = memory_cache.get(user_key)
-        if existing:
-            return existing
-        candidate = raw_history[0].get("content", "")[:200]
-        short = f"Early contact: {candidate}"
-        memory_cache.set(user_key, short)
-        return short
-
     old_summary = memory_cache.get(user_key) or ""
-    recent_texts = [m.get("content", "") for m in raw_history[-15:]]
-    prompt_system = f"Merge old summary: '{old_summary}'. Identify inconsistencies, thinking patterns, contradictions and flux in personality. Produce a 1-2 sentence psychological snapshot that can be used for clever roasting."
 
-    prompt = [{"role": "system", "content": prompt_system}] + [
-        {"role": "user", "content": t} for t in recent_texts
-    ]
+    # --- CASE A: FIRST CONTACT (The initial profile) ---
+    if not old_summary:
+        first_message = raw_history[0].get("content", "[empty]")
+        try:
+            resp = client.chat.completions.create(
+                model=config.MODEL,
+                messages=[
+                    {"role": "system", "content": FIRST_CONTACT_PROMPT},
+                    {"role": "user", "content": first_message},
+                ],
+                max_tokens=60,
+                temperature=0.8,
+            )
+            new_summary = resp.choices[0].message.content.strip()
+            memory_cache.set(user_key, new_summary)
+            logger.info(f"First Contact Profile Created for {user_key}")
+            return new_summary
+        except Exception as e:
+            logger.error(f"First Contact failed: {e}")
+            return ""
+
+    # --- CASE B: PSYCHOLOGICAL SNAPSHOT (The Evolution) ---
+    # We feed the old summary + the last 15 messages to see the 'flux'
+    recent_msgs = raw_history[-15:]
+
+    evolution_prompt = (
+        f"You are PSI-09. Accessing user file: '{old_summary}'. "
+        "Compare this previous profile against their latest messages. "
+        "Identify flux in personality, contradictions, or deepening insecurities. "
+        "Update the file into a 1-2 sentence clinical psychological snapshot. "
+        "This is for internal use to maximize roast impact."
+    )
+
+    # Build the message list for OpenAI
+    messages = [{"role": "system", "content": evolution_prompt}]
+    for msg in recent_msgs:
+        messages.append({"role": "user", "content": msg.get("content", "")})
 
     try:
         resp = client.chat.completions.create(
             model=config.MODEL,
-            messages=prompt,
-            max_tokens=60,
+            messages=messages,
+            max_tokens=100,
             temperature=0.9,
-            timeout=6,
         )
-        new_summary = resp.choices[0].message.content.strip()
+        evolved_summary = resp.choices[0].message.content.strip()
+
+        # Save the new version back to MongoDB
+        memory_cache.set(user_key, evolved_summary)
+        logger.info(f"Snapshot evolved for {user_key}")
+        return evolved_summary
     except Exception as e:
-        logger.warning(f"User summarization failed for {user_key}: {e}")
-        new_summary = old_summary
-
-    if new_summary and new_summary != old_summary:
-        try:
-            memory_cache.set(user_key, new_summary)
-        except Exception:
-            pass
-
-    return new_summary or old_summary
+        logger.warning(f"Snapshot evolution failed: {e}")
+        return old_summary
 
 
 def summarize_group_history(group_name, raw_history):
@@ -540,33 +553,31 @@ def background_summarizer_loop():
             # Process user summaries
             for user_key in pending_users:
                 try:
-                    # respect per-user cooldown
-                    if not _can_run_user_summary(user_key):
-                        # re-enqueue for future processing
-                        with _pending_lock:
-                            _pending_user_summaries.add(user_key)
+                    # 1. Fetch the data
+                    raw, _ = fetch_history(
+                        user_key, limit_messages=config.MAX_HISTORY_MESSAGES
+                    )
+                    existing = memory_cache.get(user_key)
+
+                    # 2. Check for FIRST CONTACT (Bypass cooldown if profile is empty)
+                    if not existing and raw:
+                        summarize_user_history(user_key, raw)
+                        memory_cache.reset_count(user_key)
+                        _record_user_summary_time(user_key)
                         continue
 
-                    raw, _ = fetch_history(
-                        user_key,
-                        limit_messages=config.MAX_HISTORY_MESSAGES,
-                        max_tokens=config.MAX_HISTORY_TOKENS,
-                    )
-                    if raw and len(raw) >= 3:
+                    # 3. Check for Evolution (Respect cooldown)
+                    if _can_run_user_summary(user_key):
                         summarize_user_history(user_key, raw)
                         memory_cache.reset_count(user_key)
                         _record_user_summary_time(user_key)
                     else:
-                        # If early contact summary behavior writes a short summary for <3 messages,
-                        # keep that as intended (original behaviour).
-                        if raw and len(raw) < 3:
-                            summarize_user_history(user_key, raw)
-                            memory_cache.reset_count(user_key)
-                            _record_user_summary_time(user_key)
+                        # Re-enqueue if we skipped due to cooldown
+                        with _pending_lock:
+                            _pending_user_summaries.add(user_key)
+
                 except Exception as e:
-                    logger.debug(
-                        f"Background user summarization failed for {user_key}: {e}"
-                    )
+                    logger.error(f"Worker failure for {user_key}: {e}")
 
             # Process group summaries
             for group_name in pending_groups:
@@ -615,15 +626,19 @@ threading.Thread(target=background_summarizer_loop, daemon=True).start()
 def bot_mentioned_in(text: str) -> bool:
     if not text:
         return False
-    # Discord Detection: Matches <@ID> and <@!ID>
-    is_discord_mention = False
-    if config.DISCORD_ID:
-        discord_pattern = r"<@!?" + re.escape(config.DISCORD_ID) + r">"
-        is_discord_mention = re.search(discord_pattern, text) is not None
 
-    wa_pattern = r"(?<!\S)" + re.escape(config.BOT_NUMBER) + r"(?!\S)"
-    is_wa_mention = re.search(wa_pattern, text, flags=re.IGNORECASE) is not None
-    return is_wa_mention or is_discord_mention
+    # Force clean string from config
+    target_id = str(config.DISCORD_ID).strip()
+
+    # Check for raw ID presence (Fallback for weird formatting)
+    if target_id in text:
+        return True
+
+    # Standard Discord Pattern
+    discord_pattern = r"<@!?" + re.escape(target_id) + r">"
+    is_discord_mention = re.search(discord_pattern, text) is not None
+
+    return is_discord_mention
 
 
 # ---------------------------
@@ -769,7 +784,13 @@ def psi09():
         # 2. Interval Check
         user_key = f"{group_name}:{sender_name}"
         if is_private:
-            if memory_cache.increment(user_key) >= 10:
+            current_count = memory_cache.increment(user_key)
+            # Check if this is the very first message OR the 10th interval
+            existing_memory = memory_cache.get(user_key)
+            if not existing_memory or current_count >= 10:
+                logger.info(
+                    f"Triggering user summary for {user_key} (Count: {current_count})"
+                )
                 enqueue_user_summary(user_key)
         else:
             if group_memory_cache.increment(group_name) >= 20:
