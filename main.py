@@ -697,14 +697,32 @@ def get_roast_response(user_message, group_name, sender_name):
     if not is_private_env and trimmed_group:
         # Inject the collective chatter so the AI can 'hear' everyone
         last_20 = trimmed_group[-20:] if len(trimmed_group) > 20 else trimmed_group
+
         for entry in last_20:
-            s, c = entry.get("sender", "unknown"), entry.get("content", "")
+            s = entry.get("sender", "unknown")
+            c = entry.get("content", "")
+
+            # --- FIX 1: Recognize SELF in the Sender field ---
+            if s == "PSI-09":
+                s = "YOU (PSI-09)"
+
+            # --- FIX 2: Recognize SELF in the Message Content (The Tag) ---
+            # This turns "<@12345>" into "@PSI-09" so the AI knows it was mentioned
+            if config.DISCORD_ID:
+                c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", c)
+
             messages.append({"role": "user", "content": f"{s}: {c}"})
 
     for m in trimmed_user:
-        messages.append(
-            {"role": m.get("role", "user"), "content": m.get("content", "")}
-        )
+        # Do the same cleanup for user history just in case
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if config.DISCORD_ID:
+            content = re.sub(
+                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content
+            )
+
+        messages.append({"role": role, "content": content})
 
     messages.append({"role": "user", "content": user_message})
 
