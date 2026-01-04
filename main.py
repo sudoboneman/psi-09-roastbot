@@ -464,13 +464,24 @@ def summarize_group_history(group_name, raw_history):
         return summary
 
     old_summary = group_memory_cache.get(group_name) or ""
-    recent = [f"{m.get('sender','')}: {m.get('content','')}" for m in raw_history[-25:]]
 
+    # --- CHANGED: EXPLICITLY LABEL THE BOT'S OWN MESSAGES ---
+    recent = []
+    for m in raw_history[-25:]:
+        sender = m.get("sender", "unknown")
+        # If the sender is the bot, relabel it so the AI knows it's SELF
+        if sender == "PSI-09":
+            sender = "YOU (PSI-09)"
+        recent.append(f"{sender}: {m.get('content','')}")
+
+    # --- CHANGED: UPDATED PROMPT TO RECOGNIZE IDENTITY ---
     prompt_system = (
-        "You are PSI-09, a silent observer. Analyze this collective chatter. "
-        "Identify the current topic, who is doing what, "
-        "and any group delusions. Update the old summary into a 2-sentence psychological "
-        "analysis of the room. This will be used to roast them later."
+        "You are PSI-09. Analyze this chat history. "
+        "Identify the current topic, who is doing what. "
+        "CRITICAL: Messages marked 'YOU (PSI-09)' are YOUR own past replies. "
+        "If users are arguing with 'PSI-09', they are arguing with YOU. "
+        "Identify the dynamic: are they fighting each other, or are they desperate for your attention? "
+        "Update the summary into a 2-sentence psychological read of the room."
     )
 
     prompt = [{"role": "system", "content": prompt_system}] + [
@@ -481,7 +492,7 @@ def summarize_group_history(group_name, raw_history):
         resp = client.chat.completions.create(
             model=config.MODEL,
             messages=prompt,
-            max_tokens=200,
+            max_tokens=250,  # Keep this high so it doesn't cut off
             temperature=1.0,
             timeout=6,
         )
