@@ -720,8 +720,12 @@ def get_roast_response(user_message, group_name, sender_name):
         logger.error(f"AI Error: {e}")
         base_reply = ""
 
-    # 5. DUAL STORAGE FIX
-    clean_reply = re.sub(r"\s{3,}", " ", base_reply or "").strip()
+    # 5. DUAL STORAGE FIX & PREFIX CLEANING
+    # First, strip the "PSI-09:" prefix if the AI included it (case-insensitive)
+    temp_reply = re.sub(r"^PSI-09\s*:\s*", "", base_reply or "", flags=re.IGNORECASE)
+
+    # Then clean up extra whitespace
+    clean_reply = re.sub(r"\s{3,}", " ", temp_reply).strip()
 
     if not clean_reply:
         logger.info(f"Empty or failed response for {user_key}. Skipping storage.")
