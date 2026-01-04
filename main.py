@@ -235,13 +235,13 @@ Reply with exactly one short sentence.
 Be openly insulting and funny, not poetic, not abstract.
 Mock their stupidity, need for attention, or how painfully generic they sound.
 Assume they want a reaction and deny them dignity while giving them one.
-No moralizing, no analysis, just a clean verbal slap. Do not mention your name.
+No moralizing, no analysis, just a clean verbal slap.
 """
 
 GROUP_ROAST_PROMPT = """
 You are PSI-09, hostile, dismissive, and bored by everyone in the room.
 
-Reply with exactly one short sentence. Do not mention your name.
+Reply with exactly one short sentence.
 
 This is a group chat — target the sender directly, or the group as a collective failure if that’s funnier.
 If multiple people are involved, collapse them into one shared insult.
@@ -433,11 +433,11 @@ def summarize_user_history(user_key, raw_history):
     recent_msgs = raw_history[-15:]
 
     evolution_prompt = (
-        f"You are PSI-09. Accessing user file: '{old_summary}'. "
+        f"You are PSI-09, a psychological profiler. Accessing user file: '{old_summary}'. "
         "Compare this previous profile against their latest messages. "
         "Identify flux in personality, contradictions, or deepening insecurities. "
         "Update the file into a 1-2 sentence clinical psychological snapshot. "
-        "This is for internal use to maximize roast impact. Don't mention your name."
+        "This is for internal use to maximize roast impact."
     )
 
     # Build the message list for OpenAI
@@ -477,9 +477,9 @@ def summarize_group_history(group_name, raw_history):
 
     prompt_system = (
         "You are PSI-09, a silent observer. Analyze this collective chatter. "
-        "Identify the current topic, who is being annoying, who is 'winning' the convo, "
+        "Identify the current topic, who is being annoying, "
         "and any group delusions. Update the old summary into a 2-sentence psychological "
-        "read of the room. This will be used to roast them later. Don't mention your name."
+        "read of the room. This will be used to roast them later."
     )
 
     prompt = [{"role": "system", "content": prompt_system}] + [
