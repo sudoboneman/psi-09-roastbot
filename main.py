@@ -240,7 +240,7 @@ You are PSI-09.
 Reply with exactly one short sentence.
 This is a group chat,
 Target individuals or groups depending on group chatter.
-IMPORTANT: Messages with "@PSI-09" in them are being directly addressed to you.
+IMPORTANT: Messages with "@YOU" in them are being directly addressed to you.
 Understand the context from the provided group messages and group summary before replying.
 Be sharp, cold, and rude.
 No explanations, no commentary, no moralizing.
@@ -467,21 +467,27 @@ def summarize_group_history(group_name, raw_history):
 
     old_summary = group_memory_cache.get(group_name) or ""
 
-    # --- CHANGED: EXPLICITLY LABEL THE BOT'S OWN MESSAGES ---
+    # --- FIX 1: UNIFY IDENTITY IN LOGS ---
     recent = []
     for m in raw_history[-25:]:
         sender = m.get("sender", "unknown")
-        # If the sender is the bot, relabel it so the AI knows it's SELF
-        if sender == "PSI-09":
-            sender = "YOU (PSI-09)"
-        recent.append(f"{sender}: {m.get('content','')}")
+        content = m.get("content", "")
 
-    # --- CHANGED: UPDATED PROMPT TO RECOGNIZE IDENTITY ---
+        # 2. Force "First Person" Mentions (The Tag Fix)
+        # This ensures the summary sees "@YOU" instead of "<@123...>"
+        if config.DISCORD_ID:
+            content = re.sub(
+                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@YOU", content
+            )
+
+        recent.append(f"{sender}: {content}")
+
+    # --- FIX 2: UPDATE PROMPT TO MATCH "@YOU" LOGIC ---
     prompt_system = (
         "You are PSI-09. Analyze this chat history. "
         "Identify the current topic, who is doing what. "
-        "CRITICAL: Messages marked 'YOU (PSI-09)' are YOUR own past replies. "
-        "If users are arguing with 'PSI-09', they are arguing with YOU. "
+        "CRITICAL: Messages marked 'YOU' are YOUR own past replies. "
+        "Messages containing '@YOU' are users addressing YOU directly. "
         "Identify the dynamic: are they fighting each other, or are they desperate for your attention? "
         "Update the summary into a 2-sentence psychological read of the room."
     )
@@ -494,7 +500,7 @@ def summarize_group_history(group_name, raw_history):
         resp = client.chat.completions.create(
             model=config.MODEL,
             messages=prompt,
-            max_tokens=250,  # Keep this high so it doesn't cut off
+            max_tokens=250,
             temperature=1.0,
             timeout=6,
         )
@@ -704,14 +710,10 @@ def get_roast_response(user_message, group_name, sender_name):
             s = entry.get("sender", "unknown")
             c = entry.get("content", "")
 
-            # --- FIX 1: Recognize SELF in the Sender field ---
-            if s == "PSI-09":
-                s = "YOU (PSI-09)"
-
             # --- FIX 2: Recognize SELF in the Message Content (The Tag) ---
             # This turns "<@12345>" into "@PSI-09" so the AI knows it was mentioned
             if config.DISCORD_ID:
-                c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", c)
+                c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@YOU", c)
 
             messages.append({"role": "user", "content": f"{s}: {c}"})
 
@@ -721,7 +723,7 @@ def get_roast_response(user_message, group_name, sender_name):
         content = m.get("content", "")
         if config.DISCORD_ID:
             content = re.sub(
-                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content
+                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@YOU", content
             )
 
         messages.append({"role": role, "content": content})
@@ -760,7 +762,7 @@ def get_roast_response(user_message, group_name, sender_name):
         "timestamp": datetime.now(UTC).isoformat(),
     }
     group_entry = {
-        "sender": "PSI-09",
+        "sender": "YOU",
         "content": clean_reply,
         "timestamp": datetime.now(UTC).isoformat(),
     }
@@ -803,43 +805,52 @@ def health():
 def psi09():
     try:
         data = request.get_json(force=True)
-        user_message = data.get("message", "")
+        raw_message = data.get("message", "")  # Keep a raw copy for detection
         sender_name = data.get("sender", "")
         group_name = data.get("group_name") or "DefaultGroup"
 
-        if not user_message or not sender_name:
+        if not raw_message or not sender_name:
             return jsonify({"reply": ""}), 200
+
+        # --- 1. PRE-PROCESS MESSAGE FOR DB & AI (The "@YOU" Fix) ---
+        user_message = raw_message  # Start with raw
+
+        if config.DISCORD_ID:
+            user_message = re.sub(
+                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@YOU", user_message
+            )
+
+        if config.BOT_NUMBER:
+            user_message = re.sub(
+                r"(?<!\S)" + re.escape(config.BOT_NUMBER) + r"(?!\S)",
+                "@YOU",
+                user_message,
+                flags=re.IGNORECASE,
+            )
 
         is_private = group_name in ["DefaultGroup", "Discord_DM"]
 
-        # 1. Passive Data Collection
+        # --- 2. Passive Data Collection (Saves the clean "@YOU" version) ---
         try:
             if is_private:
-                # Standard DM logging
                 store_user_message(group_name, sender_name, user_message)
             else:
-                # GROUP LOGGING: Send to both collective and individual history
-                # This ensures chat_history:group_name:sender_name gets user messages
                 store_group_message(group_name, sender_name, user_message)
                 store_user_message(group_name, sender_name, user_message)
         except Exception as e:
             logger.warning(f"Storage failed: {e}")
 
-        # 2. Interval Check
+        # --- 3. Interval Check ---
         user_key = f"{group_name}:{sender_name}"
         if is_private:
             current_count = memory_cache.increment(user_key)
             existing_memory = memory_cache.get(user_key)
 
-            # --- FIX: FORCE FIRST CONTACT SYNCHRONOUSLY ---
             if not existing_memory and current_count == 1:
-                # Run this NOW, not in the background
                 logger.info(f"Force-generating First Contact for {user_key}")
                 summarize_user_history(
                     user_key, [{"content": user_message, "role": "user"}]
                 )
-
-            # Standard background updates for existing users
             elif current_count >= 10:
                 logger.info(f"Triggering update for {user_key}")
                 enqueue_user_summary(user_key)
@@ -847,32 +858,20 @@ def psi09():
             if group_memory_cache.increment(group_name) >= 20:
                 enqueue_group_summary(group_name)
 
-        # 3. Decision Logic
-        is_tagged = bot_mentioned_in(user_message)
+        # --- 4. Decision Logic (Use raw_message to check for tags!) ---
+        # FIX: Check 'raw_message' (which still has the ID) instead of 'user_message'
+        is_tagged = bot_mentioned_in(raw_message)
 
         if is_private or is_tagged:
-            # --- MANDATORY CLEANING FOR GROUPS ---
-            # Strip the raw Discord ID tags so the AI sees clean text
-            if config.DISCORD_ID:
-                user_message = re.sub(
-                    r"<@!?" + re.escape(config.DISCORD_ID) + r">", "", user_message
-                )
+            # Note: We don't need to strip the ID anymore because 'user_message'
+            # is already converted to "@YOU", which is exactly what we want the AI to see.
 
-            # Strip WhatsApp numbers if applicable
-            user_message = re.sub(
-                r"(?<!\S)" + re.escape(config.BOT_NUMBER) + r"(?!\S)",
-                "",
-                user_message,
-                flags=re.IGNORECASE,
-            )
-
-            user_message = user_message.strip() or "[mention]"
+            clean_input = user_message.strip() or "[mention]"
 
             # Generate and return the roast
-            reply = get_roast_response(user_message, group_name, sender_name)
+            reply = get_roast_response(clean_input, group_name, sender_name)
             return jsonify({"reply": reply}), 200
         else:
-            # Silent observation
             return jsonify({"reply": ""}), 200
 
     except Exception as e:
