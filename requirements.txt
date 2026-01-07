@@ -2,6 +2,7 @@ flask
 flask-cors
 python-dotenv
 google-genai
+openai
 pymongo
 tiktoken
 certifi
