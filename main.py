@@ -42,10 +42,10 @@ class Config:
 
     # Use standard aliases. The new SDK resolves them better.
     # FAST model for Roasting
-    MODEL_FAST: str = "gemini-1.5-flash-002"
+    MODEL_FAST: str = "gemini-2.0-flash"
 
     # SMART model for Summaries (Background)
-    MODEL_SMART: str = "gemini-1.5-pro-002"
+    MODEL_SMART: str = "gemini-2.0-pro"
 
     MAX_HISTORY_TOKENS: int = 1200
     MAX_SYSTEM_TOKENS: int = 350
