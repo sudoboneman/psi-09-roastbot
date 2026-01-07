@@ -38,7 +38,8 @@ UTC = timezone.utc
 @dataclass
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
-    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
+    OPENAI_TEXT_API_KEY: str = os.getenv("OPENAI_TEXT_API_KEY")
+    OPENAI_SUMMARY_API_KEY: str = os.getenv("OPENAI_SUMMARY_API_KEY")
     MODEL: str = "gpt-4o-mini"
     MAX_HISTORY_TOKENS: int = 1200  # total token budget (history + small system memory)
     MAX_SYSTEM_TOKENS: int = 350  # reserve for system memory (prompts + memories)
@@ -85,7 +86,8 @@ group_memory_col = db["group_memory"]
 # ---------------------------
 app = Flask(__name__)
 CORS(app)
-client = OpenAI(api_key=config.OPENAI_API_KEY)
+text_client = OpenAI(api_key=config.OPENAI_TEXT_API_KEY)
+summary_client = OpenAI(api_key=config.OPENAI_SUMMARY_API_KEY)
 
 # ---------------------------
 # Token encoding (tiktoken)
@@ -404,7 +406,7 @@ def summarize_user_history(user_key, raw_history):
     if not old_summary:
         first_message = raw_history[0].get("content", "[empty]")
         try:
-            resp = client.chat.completions.create(
+            resp = summary_client.chat.completions.create(
                 model=config.MODEL,
                 messages=[
                     {"role": "system", "content": FIRST_CONTACT_PROMPT},
@@ -439,7 +441,7 @@ def summarize_user_history(user_key, raw_history):
         messages.append({"role": "user", "content": msg.get("content", "")})
 
     try:
-        resp = client.chat.completions.create(
+        resp = summary_client.chat.completions.create(
             model=config.MODEL,
             messages=messages,
             max_tokens=100,
@@ -497,7 +499,7 @@ def summarize_group_history(group_name, raw_history):
     ]
 
     try:
-        resp = client.chat.completions.create(
+        resp = summary_client.chat.completions.create(
             model=config.MODEL,
             messages=prompt,
             max_tokens=250,
@@ -732,7 +734,7 @@ def get_roast_response(user_message, group_name, sender_name):
 
     # 4. Generate Response
     try:
-        resp = client.chat.completions.create(
+        resp = text_client.chat.completions.create(
             model=config.MODEL,
             messages=messages,
             max_tokens=140,
