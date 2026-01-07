@@ -1,6 +1,8 @@
 flask
 flask-cors
 python-dotenv
-google-generativeai
+google-genai
 pymongo
 tiktoken
+certifi
+gunicorn

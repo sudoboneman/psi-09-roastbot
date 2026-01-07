@@ -2,8 +2,8 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google import genai
+from google.genai import types
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 import os
@@ -38,10 +38,15 @@ UTC = timezone.utc
 @dataclass
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
-    # CHANGED: Now looking for Gemini Key
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY")
-    # CHANGED: Default model to Gemini Flash (Fast/Cheap)
-    MODEL: str = "gemini-1.5-flash"
+
+    # Use standard aliases. The new SDK resolves them better.
+    # FAST model for Roasting
+    MODEL_FAST: str = "gemini-1.5-flash"
+
+    # SMART model for Summaries (Background)
+    MODEL_SMART: str = "gemini-1.5-pro"
+
     MAX_HISTORY_TOKENS: int = 1200
     MAX_SYSTEM_TOKENS: int = 350
     MAX_HISTORY_MESSAGES: int = 30
@@ -57,20 +62,34 @@ class Config:
 config = Config()
 
 # ---------------------------
-# Gemini Setup
+# Gemini Client Setup (New SDK)
 # ---------------------------
 if not config.GEMINI_API_KEY:
     logger.error("MISSING GEMINI_API_KEY env var!")
 
-genai.configure(api_key=config.GEMINI_API_KEY)
+# Instantiate the client once
+client = genai.Client(api_key=config.GEMINI_API_KEY)
 
-# CRITICAL: Disable safety filters for a Roast Bot, or it will refuse to be mean.
-SAFETY_SETTINGS = {
-    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-}
+# Define Safety Settings (New SDK Style: List of config objects)
+# We map all harm categories to BLOCK_NONE to allow roasting.
+SAFETY_SETTINGS = [
+    types.SafetySetting(
+        category="HARM_CATEGORY_HARASSMENT",
+        threshold="BLOCK_NONE",
+    ),
+    types.SafetySetting(
+        category="HARM_CATEGORY_HATE_SPEECH",
+        threshold="BLOCK_NONE",
+    ),
+    types.SafetySetting(
+        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        threshold="BLOCK_NONE",
+    ),
+    types.SafetySetting(
+        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+        threshold="BLOCK_NONE",
+    ),
+]
 
 # ---------------------------
 # MongoDB
@@ -103,8 +122,6 @@ CORS(app)
 # ---------------------------
 # Token encoding (tiktoken)
 # ---------------------------
-# Note: We keep tiktoken as a "good enough" proxy for length estimation
-# to avoid making API calls just to count tokens.
 try:
     ENCODING = tiktoken.get_encoding("cl100k_base")
 except Exception:
@@ -385,26 +402,30 @@ def store_group_message(group_name, sender_name, message):
 
 
 # ---------------------------
-# Gemini API Helpers
+# Gemini API Helper (New Google-GenAI SDK)
 # ---------------------------
-def gemini_chat(system_instruction, chat_history_list):
+def gemini_chat(system_instruction, chat_history_list, model_name=config.MODEL_FAST):
     """
-    Helper to create a model with system instructions and generate content
-    based on a list of chat messages.
-    chat_history_list: list of {"role": "user"|"model", "parts": [text]}
+    Helper to generate content using the new google-genai SDK.
+    chat_history_list: list of dicts or Content objects
     """
     try:
-        model = genai.GenerativeModel(
-            model_name=config.MODEL,
+        # Create the configuration object
+        # This holds safety settings, temperature, and system instructions
+        generate_config = types.GenerateContentConfig(
+            temperature=0.9,
             system_instruction=system_instruction,
             safety_settings=SAFETY_SETTINGS,
         )
 
-        # Gemini expects the conversation as a list of Content objects or dicts
-        response = model.generate_content(chat_history_list)
-        return response.text.strip()
+        response = client.models.generate_content(
+            model=model_name, contents=chat_history_list, config=generate_config
+        )
+
+        # In the new SDK, accessing text is direct
+        return response.text.strip() if response.text else ""
     except Exception as e:
-        logger.error(f"Gemini API Error: {e}")
+        logger.error(f"Gemini API Error ({model_name}): {e}")
         return ""
 
 
@@ -417,13 +438,15 @@ def summarize_user_history(user_key, raw_history):
 
     old_summary = memory_cache.get(user_key) or ""
 
-    # --- CASE A: FIRST CONTACT ---
+    # --- CASE A: FIRST CONTACT (Use SMART model) ---
     if not old_summary:
         first_message = raw_history[0].get("content", "[empty]")
-        # For single turn, we can just send the user message content
-        # wrapped as history
-        history = [{"role": "user", "parts": [first_message]}]
-        new_summary = gemini_chat(FIRST_CONTACT_PROMPT, history)
+        # New SDK is flexible with list of dicts for contents
+        history = [{"role": "user", "parts": [{"text": first_message}]}]
+
+        new_summary = gemini_chat(
+            FIRST_CONTACT_PROMPT, history, model_name=config.MODEL_SMART
+        )
 
         if new_summary:
             memory_cache.set(user_key, new_summary)
@@ -432,7 +455,7 @@ def summarize_user_history(user_key, raw_history):
         else:
             return ""
 
-    # --- CASE B: PSYCHOLOGICAL SNAPSHOT ---
+    # --- CASE B: PSYCHOLOGICAL SNAPSHOT (Use SMART model) ---
     recent_msgs = raw_history[-15:]
     evolution_prompt = (
         f"You are PSI-09, a psychological profiler. Accessing user file: '{old_summary}'. "
@@ -442,12 +465,12 @@ def summarize_user_history(user_key, raw_history):
         "This is for internal use to maximize roast impact."
     )
 
-    # Flatten recent messages into one block for the "user" side,
-    # or pass them as history. For summarization, a single block is often cleaner.
     combined_text = "\n".join([m.get("content", "") for m in recent_msgs])
-    history = [{"role": "user", "parts": [combined_text]}]
+    history = [{"role": "user", "parts": [{"text": combined_text}]}]
 
-    evolved_summary = gemini_chat(evolution_prompt, history)
+    evolved_summary = gemini_chat(
+        evolution_prompt, history, model_name=config.MODEL_SMART
+    )
 
     if evolved_summary:
         memory_cache.set(user_key, evolved_summary)
@@ -488,9 +511,10 @@ def summarize_group_history(group_name, raw_history):
     )
 
     combined_chat = "\n".join(recent)
-    history = [{"role": "user", "parts": [combined_chat]}]
+    history = [{"role": "user", "parts": [{"text": combined_chat}]}]
 
-    new_summary = gemini_chat(prompt_system, history)
+    # Use SMART model for summaries
+    new_summary = gemini_chat(prompt_system, history, model_name=config.MODEL_SMART)
 
     if new_summary and new_summary != old_summary:
         group_memory_cache.set(group_name, new_summary)
@@ -556,12 +580,15 @@ def background_summarizer_loop():
                         summarize_user_history(user_key, raw)
                         memory_cache.reset_count(user_key)
                         _record_user_summary_time(user_key)
+                        # Avoid hitting rate limits on Pro model
+                        time.sleep(10)
                         continue
 
                     if _can_run_user_summary(user_key):
                         summarize_user_history(user_key, raw)
                         memory_cache.reset_count(user_key)
                         _record_user_summary_time(user_key)
+                        time.sleep(10)
                     else:
                         with _pending_lock:
                             _pending_user_summaries.add(user_key)
@@ -585,6 +612,7 @@ def background_summarizer_loop():
                         summarize_group_history(group_name, raw)
                         group_memory_cache.reset_count(group_name)
                         _record_group_summary_time(group_name)
+                        time.sleep(10)
                     else:
                         if raw and len(raw) < 6:
                             summarize_group_history(group_name, raw)
@@ -639,7 +667,7 @@ def get_roast_response(user_message, group_name, sender_name):
     else:
         raw_group, trimmed_group, group_memory = [], [], ""
 
-    # 2. Build System Instruction (Context)
+    # 2. Build System Context
     sys_parts = []
     user_memory = memory_cache.get(user_key)
     if user_memory:
@@ -653,8 +681,7 @@ def get_roast_response(user_message, group_name, sender_name):
     else:
         final_system_instruction = base_prompt
 
-    # 3. Build Chat History for Gemini
-    # Gemini uses [{"role": "user", "parts": [...]}, {"role": "model", "parts": [...]}]
+    # 3. Build Chat History for Gemini (Standardized structure)
     gemini_history = []
 
     if not is_private_env and trimmed_group:
@@ -668,9 +695,11 @@ def get_roast_response(user_message, group_name, sender_name):
 
             # Map roles: if sender is YOU, role=model, else role=user
             if s == "YOU":
-                gemini_history.append({"role": "model", "parts": [c]})
+                gemini_history.append({"role": "model", "parts": [{"text": c}]})
             else:
-                gemini_history.append({"role": "user", "parts": [f"{s}: {c}"]})
+                gemini_history.append(
+                    {"role": "user", "parts": [{"text": f"{s}: {c}"}]}
+                )
 
     for m in trimmed_user:
         role = m.get("role", "user")
@@ -680,15 +709,16 @@ def get_roast_response(user_message, group_name, sender_name):
                 r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@YOU", content
             )
 
-        # Map OpenAI roles to Gemini roles
         g_role = "model" if role == "assistant" else "user"
-        gemini_history.append({"role": g_role, "parts": [content]})
+        gemini_history.append({"role": g_role, "parts": [{"text": content}]})
 
     # Add the final new message
-    gemini_history.append({"role": "user", "parts": [user_message]})
+    gemini_history.append({"role": "user", "parts": [{"text": user_message}]})
 
-    # 4. Generate
-    base_reply = gemini_chat(final_system_instruction, gemini_history)
+    # 4. Generate (Use FAST model for roasts)
+    base_reply = gemini_chat(
+        final_system_instruction, gemini_history, model_name=config.MODEL_FAST
+    )
 
     # 5. Clean & Store
     temp_reply = re.sub(r"^PSI-09\s*:\s*", "", base_reply or "", flags=re.IGNORECASE)
@@ -699,7 +729,7 @@ def get_roast_response(user_message, group_name, sender_name):
         return ""
 
     user_entry = {
-        "role": "assistant",  # DB still uses 'assistant' for compatibility
+        "role": "assistant",
         "content": clean_reply,
         "timestamp": datetime.now(UTC).isoformat(),
     }
