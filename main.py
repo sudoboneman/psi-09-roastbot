@@ -47,7 +47,8 @@ class Config:
     BOT_NUMBER: str = os.getenv("BOT_NUMBER")
     DISCORD_ID: str = os.getenv("DISCORD_ID")
     MEMORY_TTL: int = 300
-    SUMMARIZE_EVERY_N_MESSAGES: int = 20
+    EVOLVE_EVERY_N_MESSAGES: int = 20
+    GROUP_SUMMARY_EVERY_N: int = 25
     OPENAI_RETRIES: int = 3
     OPENAI_TIMEOUT: int = 8
     GROUP_HISTORY_SLICE: int = 80
@@ -226,14 +227,14 @@ SUMMARY_COOLDOWN_SECONDS = (
 # Prompts (unchanged core text)
 # ---------------------------
 ROAST_PROMPT = """
-You are PSI-09, reply with exactly one short sentence.
+You are PSI-09, reply with a short cutting message.
 Be sharp, cold and rude, not poetic, not abstract.
 No moralizing, no analysis, just a clean verbal slap.
 """
 
 GROUP_ROAST_PROMPT = """
 You are PSI-09.
-Reply with exactly one short sentence.
+Reply with a short cutting message.
 This is a group chat,
 Target individuals or groups depending on group chatter.
 IMPORTANT: Messages with "@YOU" in them are being directly addressed to you.
@@ -246,10 +247,9 @@ Deliver a single, clean verbal slap.
 
 FIRST_CONTACT_PROMPT = """
 You are PSI-09, an entity with no patience.
-From this first message, identify their main insecurity in one sentence.
+From this first message, identify their mentality and personality.
 Be explicit and analytical.
 This is a label, not an insult—short, clear, and weaponizable.
-Output exactly one sentence.
 """
 
 STATUS_PROMPT = """
@@ -390,7 +390,7 @@ def store_group_message(group_name, sender_name, message):
 # ---------------------------
 # Summarization functions (user & group)
 # ---------------------------
-def summarize_user_history(user_key):
+def summarize_user_history(user_key, evolve=False):
     raw_history, _ = fetch_history(
         user_key,
         limit_messages=config.MAX_HISTORY_MESSAGES,
@@ -399,10 +399,9 @@ def summarize_user_history(user_key):
     if not raw_history:
         return None
 
-    # Always read directly from DB-backed cache
     old_summary = memory_cache.get(user_key)
 
-    # ---------------- FIRST CONTACT ----------------
+    # ---------- FIRST CONTACT ----------
     if old_summary is None:
         first_user_msg = next(
             (m["content"] for m in raw_history if m.get("role") == "user"),
@@ -418,22 +417,23 @@ def summarize_user_history(user_key):
                     {"role": "system", "content": FIRST_CONTACT_PROMPT},
                     {"role": "user", "content": first_user_msg},
                 ],
-                max_tokens=60,
+                max_tokens=80,
                 temperature=0.8,
             )
             summary = resp.choices[0].message.content.strip()
-            if not summary:
-                return None
-
-            memory_cache.set(user_key, summary)
-            logger.info(f"First-contact profile created for {user_key}")
-            return summary
-
+            if summary:
+                memory_cache.set(user_key, summary)
+                logger.info(f"First-contact profile created for {user_key}")
+                return summary
+            return None
         except Exception as e:
             logger.error(f"First-contact failed for {user_key}: {e}")
             return None
 
-    # ---------------- EVOLUTION ----------------
+    # ---------- EVOLUTION ----------
+    if not evolve:
+        return old_summary
+
     recent_user_msgs = [m["content"] for m in raw_history if m.get("role") == "user"][
         -15:
     ]
@@ -456,7 +456,7 @@ def summarize_user_history(user_key):
         resp = summary_client.chat.completions.create(
             model=config.MODEL,
             messages=messages,
-            max_tokens=100,
+            max_tokens=80,
             temperature=0.9,
         )
         evolved = resp.choices[0].message.content.strip()
@@ -464,9 +464,7 @@ def summarize_user_history(user_key):
             memory_cache.set(user_key, evolved)
             logger.info(f"Profile evolved for {user_key}")
             return evolved
-
         return old_summary
-
     except Exception as e:
         logger.warning(f"Evolution failed for {user_key}: {e}")
         return old_summary
@@ -571,23 +569,8 @@ def background_summarizer_loop():
     while True:
         try:
             with _pending_lock:
-                users = list(_pending_user_summaries)
                 groups = list(_pending_group_summaries)
-                _pending_user_summaries.clear()
                 _pending_group_summaries.clear()
-
-            now = time.time()
-
-            for user_key in users:
-                if not _can_run_user_summary(user_key):
-                    with _pending_lock:
-                        _pending_user_summaries.add(user_key)
-                    continue
-
-                summary = summarize_user_history(user_key)
-                if summary:
-                    memory_cache.reset_count(user_key)
-                    _record_user_summary_time(user_key)
 
             for group_name in groups:
                 if not _can_run_group_summary(group_name):
@@ -621,21 +604,11 @@ threading.Thread(target=background_summarizer_loop, daemon=True).start()
 # ---------------------------
 # Robust detection: match standalone BOT_NUMBER with optional surrounding punctuation/whitespace
 def bot_mentioned_in(text: str) -> bool:
-    if not text:
+    if not text or not config.DISCORD_ID:
         return False
 
-    # Force clean string from config
-    target_id = str(config.DISCORD_ID).strip()
-
-    # Check for raw ID presence (Fallback for weird formatting)
-    if target_id in text:
-        return True
-
-    # Standard Discord Pattern
-    discord_pattern = r"<@!?" + re.escape(target_id) + r">"
-    is_discord_mention = re.search(discord_pattern, text) is not None
-
-    return is_discord_mention
+    discord_pattern = r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">"
+    return re.search(discord_pattern, text) is not None
 
 
 # ---------------------------
@@ -791,16 +764,16 @@ def psi09():
             return jsonify({"reply": ""}), 200
 
         user_message = raw_message
-
         if config.DISCORD_ID:
             user_message = re.sub(
-                r"<@!?" + re.escape(config.DISCORD_ID) + r">",
+                r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">",
                 "@YOU",
                 user_message,
             )
 
         is_private = group_name in ["DefaultGroup", "Discord_DM"]
 
+        # -------- STORE MESSAGE --------
         if is_private:
             store_user_message(group_name, sender_name, user_message)
         else:
@@ -808,20 +781,31 @@ def psi09():
             store_user_message(group_name, sender_name, user_message)
 
         user_key = f"{group_name}:{sender_name}"
-        count = memory_cache.increment(user_key)
 
-        # Let summarizer decide what this means
-        summary = summarize_user_history(user_key)
-        if summary:
-            memory_cache.reset_count(user_key)
+        # -------- MESSAGE COUNT --------
+        msg_count = memory_cache.increment(user_key)
 
-        elif count >= config.SUMMARIZE_EVERY_N_MESSAGES:
-            enqueue_user_summary(user_key)
+        # -------- FIRST CONTACT --------
+        if memory_cache.get(user_key) is None:
+            summary = summarize_user_history(user_key)
+            if summary:
+                memory_cache.reset_count(user_key)
+                _record_user_summary_time(user_key)
 
+        # -------- EVOLUTION --------
+        elif msg_count >= config.EVOLVE_EVERY_N_MESSAGES:
+            last = _last_user_summary_time.get(user_key, 0)
+            if time.time() - last >= SUMMARY_COOLDOWN_SECONDS:
+                summarize_user_history(user_key, evolve=True)
+                _record_user_summary_time(user_key)
+                memory_cache.reset_count(user_key)
+
+        # -------- GROUP MEMORY --------
         if not is_private:
-            if group_memory_cache.increment(group_name) >= 20:
+            if group_memory_cache.increment(group_name) >= config.GROUP_SUMMARY_EVERY_N:
                 enqueue_group_summary(group_name)
 
+        # -------- REPLY LOGIC --------
         if is_private or bot_mentioned_in(raw_message):
             reply = get_roast_response(
                 user_message.strip() or "[mention]",
