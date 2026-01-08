@@ -115,25 +115,26 @@ class MemoryCache:
             if key in self.cache and self.expiry.get(key, now) > now:
                 return self.cache[key]
 
-        # load from DB on miss (DB is canonical)
         try:
             doc = memory_col.find_one({"_id": key})
-            summary = doc.get("summary", "") if doc else ""
+            summary = doc.get("summary") if doc and doc.get("summary") else None
         except PyMongoError as e:
             logger.warning(f"Failed to load user memory for {key}: {e}")
-            summary = ""
+            summary = None
 
         with self.lock:
             self.cache[key] = summary
             self.expiry[key] = now + self.ttl
+
         return summary
 
     def set(self, key, value):
         now = datetime.now(UTC)
-        # write-through to DB (best-effort)
         try:
             memory_col.update_one(
-                {"_id": key}, {"$set": {"summary": value}}, upsert=True
+                {"_id": key},
+                {"$set": {"summary": value}},
+                upsert=True,
             )
         except PyMongoError as e:
             logger.warning(f"Failed to persist user memory for {key}: {e}")
@@ -141,7 +142,6 @@ class MemoryCache:
         with self.lock:
             self.cache[key] = value
             self.expiry[key] = now + self.ttl
-            self.msg_count[key] = 0
 
     def increment(self, key):
         with self.lock:
@@ -151,10 +151,6 @@ class MemoryCache:
     def reset_count(self, key):
         with self.lock:
             self.msg_count[key] = 0
-
-    def should_summary(self, key):
-        with self.lock:
-            return self.msg_count[key] >= config.SUMMARIZE_EVERY_N_MESSAGES
 
 
 memory_cache = MemoryCache(config.MEMORY_TTL)
@@ -176,21 +172,24 @@ class GroupMemoryCache:
 
         try:
             doc = group_memory_col.find_one({"_id": key})
-            summary = doc.get("summary", "") if doc else ""
+            summary = doc.get("summary") if doc and doc.get("summary") else None
         except PyMongoError as e:
             logger.warning(f"Failed to load group memory for {key}: {e}")
-            summary = ""
+            summary = None
 
         with self.lock:
             self.cache[key] = summary
             self.expiry[key] = now + self.ttl
+
         return summary
 
     def set(self, key, value):
         now = datetime.now(UTC)
         try:
             group_memory_col.update_one(
-                {"_id": key}, {"$set": {"summary": value}}, upsert=True
+                {"_id": key},
+                {"$set": {"summary": value}},
+                upsert=True,
             )
         except PyMongoError as e:
             logger.warning(f"Failed to persist group memory for {key}: {e}")
@@ -198,7 +197,6 @@ class GroupMemoryCache:
         with self.lock:
             self.cache[key] = value
             self.expiry[key] = now + self.ttl
-            self.msg_count[key] = 0
 
     def increment(self, key):
         with self.lock:
@@ -208,10 +206,6 @@ class GroupMemoryCache:
     def reset_count(self, key):
         with self.lock:
             self.msg_count[key] = 0
-
-    def should_summary(self, key):
-        with self.lock:
-            return self.msg_count[key] >= config.SUMMARIZE_EVERY_N_MESSAGES
 
 
 group_memory_cache = GroupMemoryCache(config.MEMORY_TTL)
@@ -396,49 +390,67 @@ def store_group_message(group_name, sender_name, message):
 # ---------------------------
 # Summarization functions (user & group)
 # ---------------------------
-def summarize_user_history(user_key, raw_history):
+def summarize_user_history(user_key):
+    raw_history, _ = fetch_history(
+        user_key,
+        limit_messages=config.MAX_HISTORY_MESSAGES,
+    )
+
     if not raw_history:
-        return memory_cache.get(user_key)
+        return None
 
-    old_summary = memory_cache.get(user_key) or ""
+    # Always read directly from DB-backed cache
+    old_summary = memory_cache.get(user_key)
 
-    # --- CASE A: FIRST CONTACT (The initial profile) ---
-    if not old_summary:
-        first_message = raw_history[0].get("content", "[empty]")
+    # ---------------- FIRST CONTACT ----------------
+    if old_summary is None:
+        first_user_msg = next(
+            (m["content"] for m in raw_history if m.get("role") == "user"),
+            None,
+        )
+        if not first_user_msg:
+            return None
+
         try:
             resp = summary_client.chat.completions.create(
                 model=config.MODEL,
                 messages=[
                     {"role": "system", "content": FIRST_CONTACT_PROMPT},
-                    {"role": "user", "content": first_message},
+                    {"role": "user", "content": first_user_msg},
                 ],
                 max_tokens=60,
                 temperature=0.8,
             )
-            new_summary = resp.choices[0].message.content.strip()
-            memory_cache.set(user_key, new_summary)
-            logger.info(f"First Contact Profile Created for {user_key}")
-            return new_summary
-        except Exception as e:
-            logger.error(f"First Contact failed: {e}")
-            return ""
+            summary = resp.choices[0].message.content.strip()
+            if not summary:
+                return None
 
-    # --- CASE B: PSYCHOLOGICAL SNAPSHOT (The Evolution) ---
-    # We feed the old summary + the last 15 messages to see the 'flux'
-    recent_msgs = raw_history[-15:]
+            memory_cache.set(user_key, summary)
+            logger.info(f"First-contact profile created for {user_key}")
+            return summary
+
+        except Exception as e:
+            logger.error(f"First-contact failed for {user_key}: {e}")
+            return None
+
+    # ---------------- EVOLUTION ----------------
+    recent_user_msgs = [m["content"] for m in raw_history if m.get("role") == "user"][
+        -15:
+    ]
+
+    if not recent_user_msgs:
+        return old_summary
 
     evolution_prompt = (
-        f"You are PSI-09, a psychological profiler. Accessing user file: '{old_summary}'. "
-        "Compare this previous profile against their latest messages. "
-        "Identify flux in personality, contradictions, or deepening insecurities. "
-        "Update the file into a 1-2 sentence clinical psychological snapshot. "
-        "This is for internal use to maximize roast impact."
+        f"You are PSI-09, a psychological profiler. Existing profile: '{old_summary}'. "
+        "Compare this profile against the user's recent messages. "
+        "Identify changes, contradictions, or intensification of traits. "
+        "Rewrite the profile as a 1–2 sentence clinical psychological snapshot."
     )
 
-    # Build the message list for OpenAI
     messages = [{"role": "system", "content": evolution_prompt}]
-    for msg in recent_msgs:
-        messages.append({"role": "user", "content": msg.get("content", "")})
+    for msg in recent_user_msgs:
+        messages.append({"role": "user", "content": msg})
 
     try:
         resp = summary_client.chat.completions.create(
@@ -447,14 +459,16 @@ def summarize_user_history(user_key, raw_history):
             max_tokens=100,
             temperature=0.9,
         )
-        evolved_summary = resp.choices[0].message.content.strip()
+        evolved = resp.choices[0].message.content.strip()
+        if evolved:
+            memory_cache.set(user_key, evolved)
+            logger.info(f"Profile evolved for {user_key}")
+            return evolved
 
-        # Save the new version back to MongoDB
-        memory_cache.set(user_key, evolved_summary)
-        logger.info(f"Snapshot evolved for {user_key}")
-        return evolved_summary
+        return old_summary
+
     except Exception as e:
-        logger.warning(f"Snapshot evolution failed: {e}")
+        logger.warning(f"Evolution failed for {user_key}: {e}")
         return old_summary
 
 
@@ -554,85 +568,47 @@ def _record_group_summary_time(group_name):
 
 
 def background_summarizer_loop():
-    """
-    Periodically processes pending user and group summaries in the background.
-    This avoids blocking the request path with expensive summarization calls.
-    """
     while True:
         try:
-            pending_users = []
-            pending_groups = []
             with _pending_lock:
-                if _pending_user_summaries:
-                    pending_users = list(_pending_user_summaries)
-                    # clear the set; we'll re-add keys that we skip due to cooldown
-                    _pending_user_summaries.clear()
-                if _pending_group_summaries:
-                    pending_groups = list(_pending_group_summaries)
-                    _pending_group_summaries.clear()
+                users = list(_pending_user_summaries)
+                groups = list(_pending_group_summaries)
+                _pending_user_summaries.clear()
+                _pending_group_summaries.clear()
 
-            # Process user summaries
-            for user_key in pending_users:
-                try:
-                    # 1. Fetch the data
-                    raw, _ = fetch_history(
-                        user_key, limit_messages=config.MAX_HISTORY_MESSAGES
-                    )
-                    existing = memory_cache.get(user_key)
+            now = time.time()
 
-                    # 2. Check for FIRST CONTACT (Bypass cooldown if profile is empty)
-                    if not existing and raw:
-                        summarize_user_history(user_key, raw)
-                        memory_cache.reset_count(user_key)
-                        _record_user_summary_time(user_key)
-                        continue
+            for user_key in users:
+                if not _can_run_user_summary(user_key):
+                    with _pending_lock:
+                        _pending_user_summaries.add(user_key)
+                    continue
 
-                    # 3. Check for Evolution (Respect cooldown)
-                    if _can_run_user_summary(user_key):
-                        summarize_user_history(user_key, raw)
-                        memory_cache.reset_count(user_key)
-                        _record_user_summary_time(user_key)
-                    else:
-                        # Re-enqueue if we skipped due to cooldown
-                        with _pending_lock:
-                            _pending_user_summaries.add(user_key)
+                summary = summarize_user_history(user_key)
+                if summary:
+                    memory_cache.reset_count(user_key)
+                    _record_user_summary_time(user_key)
 
-                except Exception as e:
-                    logger.error(f"Worker failure for {user_key}: {e}")
+            for group_name in groups:
+                if not _can_run_group_summary(group_name):
+                    with _pending_lock:
+                        _pending_group_summaries.add(group_name)
+                    continue
 
-            # Process group summaries
-            for group_name in pending_groups:
-                try:
-                    # respect per-group cooldown
-                    if not _can_run_group_summary(group_name):
-                        with _pending_lock:
-                            _pending_group_summaries.add(group_name)
-                        continue
+                raw, _ = fetch_group_history(
+                    group_name,
+                    limit_messages=config.GROUP_HISTORY_SLICE,
+                    max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
+                )
 
-                    raw, _ = fetch_group_history(
-                        group_name,
-                        limit_messages=config.GROUP_HISTORY_SLICE,
-                        max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
-                    )
-                    if raw and len(raw) >= 6:
-                        summarize_group_history(group_name, raw)
-                        group_memory_cache.reset_count(group_name)
-                        _record_group_summary_time(group_name)
-                    else:
-                        # keep original small-group behaviour for <6 messages
-                        if raw and len(raw) < 6:
-                            summarize_group_history(group_name, raw)
-                            group_memory_cache.reset_count(group_name)
-                            _record_group_summary_time(group_name)
-                except Exception as e:
-                    logger.debug(
-                        f"Background group summarization failed for {group_name}: {e}"
-                    )
+                if raw:
+                    summarize_group_history(group_name, raw)
+                    group_memory_cache.reset_count(group_name)
+                    _record_group_summary_time(group_name)
 
         except Exception as e:
-            logger.debug(f"Background summarizer top-level exception: {e}")
+            logger.debug(f"Background summarizer error: {e}")
 
-        # Sleep interval — increased slightly to avoid too-frequent sweeps
         time.sleep(12)
 
 
@@ -807,77 +783,57 @@ def health():
 def psi09():
     try:
         data = request.get_json(force=True)
-        raw_message = data.get("message", "")  # Keep a raw copy for detection
+        raw_message = data.get("message", "")
         sender_name = data.get("sender", "")
         group_name = data.get("group_name") or "DefaultGroup"
 
         if not raw_message or not sender_name:
             return jsonify({"reply": ""}), 200
 
-        # --- 1. PRE-PROCESS MESSAGE FOR DB & AI (The "@YOU" Fix) ---
-        user_message = raw_message  # Start with raw
+        user_message = raw_message
 
         if config.DISCORD_ID:
             user_message = re.sub(
-                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@YOU", user_message
-            )
-
-        if config.BOT_NUMBER:
-            user_message = re.sub(
-                r"(?<!\S)" + re.escape(config.BOT_NUMBER) + r"(?!\S)",
+                r"<@!?" + re.escape(config.DISCORD_ID) + r">",
                 "@YOU",
                 user_message,
-                flags=re.IGNORECASE,
             )
 
         is_private = group_name in ["DefaultGroup", "Discord_DM"]
 
-        # --- 2. Passive Data Collection (Saves the clean "@YOU" version) ---
-        try:
-            if is_private:
-                store_user_message(group_name, sender_name, user_message)
-            else:
-                store_group_message(group_name, sender_name, user_message)
-                store_user_message(group_name, sender_name, user_message)
-        except Exception as e:
-            logger.warning(f"Storage failed: {e}")
-
-        # --- 3. Interval Check ---
-        user_key = f"{group_name}:{sender_name}"
         if is_private:
-            current_count = memory_cache.increment(user_key)
-            existing_memory = memory_cache.get(user_key)
-
-            if not existing_memory and current_count == 1:
-                logger.info(f"Force-generating First Contact for {user_key}")
-                summarize_user_history(
-                    user_key, [{"content": user_message, "role": "user"}]
-                )
-            elif current_count >= 10:
-                logger.info(f"Triggering update for {user_key}")
-                enqueue_user_summary(user_key)
+            store_user_message(group_name, sender_name, user_message)
         else:
+            store_group_message(group_name, sender_name, user_message)
+            store_user_message(group_name, sender_name, user_message)
+
+        user_key = f"{group_name}:{sender_name}"
+        count = memory_cache.increment(user_key)
+
+        # Let summarizer decide what this means
+        summary = summarize_user_history(user_key)
+        if summary:
+            memory_cache.reset_count(user_key)
+
+        elif count >= config.SUMMARIZE_EVERY_N_MESSAGES:
+            enqueue_user_summary(user_key)
+
+        if not is_private:
             if group_memory_cache.increment(group_name) >= 20:
                 enqueue_group_summary(group_name)
 
-        # --- 4. Decision Logic (Use raw_message to check for tags!) ---
-        # FIX: Check 'raw_message' (which still has the ID) instead of 'user_message'
-        is_tagged = bot_mentioned_in(raw_message)
-
-        if is_private or is_tagged:
-            # Note: We don't need to strip the ID anymore because 'user_message'
-            # is already converted to "@YOU", which is exactly what we want the AI to see.
-
-            clean_input = user_message.strip() or "[mention]"
-
-            # Generate and return the roast
-            reply = get_roast_response(clean_input, group_name, sender_name)
+        if is_private or bot_mentioned_in(raw_message):
+            reply = get_roast_response(
+                user_message.strip() or "[mention]",
+                group_name,
+                sender_name,
+            )
             return jsonify({"reply": reply}), 200
-        else:
-            return jsonify({"reply": ""}), 200
+
+        return jsonify({"reply": ""}), 200
 
     except Exception as e:
-        logger.exception(f"Error in /psi09: {e}")
+        logger.exception(f"/psi09 failure: {e}")
         return jsonify({"reply": ""}), 500
 
 
