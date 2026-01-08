@@ -227,14 +227,14 @@ SUMMARY_COOLDOWN_SECONDS = (
 # Prompts (unchanged core text)
 # ---------------------------
 ROAST_PROMPT = """
-You are PSI-09, reply with a short cutting message.
+You are PSI-09, reply with a short message.
 Be sharp, cold and rude, not poetic, not abstract.
 No moralizing, no analysis, just a clean verbal slap.
 """
 
 GROUP_ROAST_PROMPT = """
 You are PSI-09.
-Reply with a short cutting message.
+Reply with a short message.
 This is a group chat,
 Target individuals or groups depending on group chatter.
 IMPORTANT: Messages with "@YOU" in them are being directly addressed to you.
@@ -250,6 +250,7 @@ You are PSI-09, an entity with no patience.
 From this first message, identify their mentality and personality.
 Be explicit and analytical.
 This is a label, not an insult—short, clear, and weaponizable.
+Keep it under 1-2 sentences at max.
 """
 
 STATUS_PROMPT = """
@@ -417,7 +418,7 @@ def summarize_user_history(user_key, evolve=False):
                     {"role": "system", "content": FIRST_CONTACT_PROMPT},
                     {"role": "user", "content": first_user_msg},
                 ],
-                max_tokens=80,
+                max_tokens=100,
                 temperature=0.8,
             )
             summary = resp.choices[0].message.content.strip()
@@ -446,6 +447,7 @@ def summarize_user_history(user_key, evolve=False):
         "Compare this profile against the user's recent messages. "
         "Identify changes, contradictions, or intensification of traits. "
         "Rewrite the profile as a 1–2 sentence clinical psychological snapshot."
+        "Keep it short and precise."
     )
 
     messages = [{"role": "system", "content": evolution_prompt}]
@@ -456,7 +458,7 @@ def summarize_user_history(user_key, evolve=False):
         resp = summary_client.chat.completions.create(
             model=config.MODEL,
             messages=messages,
-            max_tokens=80,
+            max_tokens=100,
             temperature=0.9,
         )
         evolved = resp.choices[0].message.content.strip()
