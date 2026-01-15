@@ -634,6 +634,13 @@ def get_roast_response(user_message, group_name, sender_name):
     else:
         raw_group, trimmed_group, group_memory = [], [], ""
 
+    # ---- FIX: remove current turn from history to avoid duplication ----
+    if trimmed_user:
+        trimmed_user = trimmed_user[:-1]
+
+    if not is_private_env and trimmed_group:
+        trimmed_group = trimmed_group[:-1]
+
     # 2. Build the "Observer" Brain
     sys_parts = []
     user_memory = memory_cache.get(user_key)
