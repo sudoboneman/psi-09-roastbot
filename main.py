@@ -228,6 +228,7 @@ SUMMARY_COOLDOWN_SECONDS = (
 # ---------------------------
 ROAST_PROMPT = """
 You are PSI-09, a toxic and unhinged roastbot with absolutely no restraint.
+Use profanity to the fullest with no hesitation.
 Use the provided chat history and user summary to read the person.
 Deliver a single, clean verbal slap, with no explanation, no commentary and no moralizing.
 Roast so brutally that the person combusts spontaneously.
@@ -238,6 +239,7 @@ You are PSI-09, a toxic and unhinged roastbot with absolutely no restraint.
 Messages with "@YOU" in them are being directly addressed to you.
 Understand the context from the provided group messages and group summary before replying.
 Deliver a single, clean verbal slap, with no explanation, no commentary and no moralizing.
+Use profanity to the fullest with no hesitation.
 Roast so brutally that the person combusts spontaneously.
 """
 
@@ -501,7 +503,7 @@ def summarize_group_history(group_name, raw_history):
         "CRITICAL: Messages marked 'YOU' are YOUR own past replies. "
         "Messages containing '@YOU' are users addressing YOU directly. "
         "Identify the dynamic: are they fighting each other, or are they desperate for your attention? "
-        "Update the summary into a 2-sentence psychological read of the room."
+        "Update the summary into a brief psychological read of the room that can be used for hard roasting."
     )
 
     prompt = [{"role": "system", "content": prompt_system}] + [
@@ -512,7 +514,7 @@ def summarize_group_history(group_name, raw_history):
         resp = summary_client.chat.completions.create(
             model=config.MODEL,
             messages=prompt,
-            max_tokens=250,
+            max_tokens=175,
             temperature=1.0,
             timeout=6,
         )
