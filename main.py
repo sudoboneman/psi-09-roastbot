@@ -40,7 +40,7 @@ class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     OPENAI_TEXT_API_KEY: str = os.getenv("OPENAI_TEXT_API_KEY")
     OPENAI_SUMMARY_API_KEY: str = os.getenv("OPENAI_SUMMARY_API_KEY")
-    MODEL: str = "gpt-4o-mini"
+    MODEL: str = "gpt-5-nano"
     MAX_HISTORY_TOKENS: int = 1200  # total token budget (history + small system memory)
     MAX_SYSTEM_TOKENS: int = 350  # reserve for system memory (prompts + memories)
     MAX_HISTORY_MESSAGES: int = 30
