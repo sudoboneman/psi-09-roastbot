@@ -1,32 +1,32 @@
 # main.py
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from dotenv import load_dotenv
-from openai import OpenAI
-from pymongo import MongoClient
-from pymongo.errors import PyMongoError
 import os
-import tiktoken
-import random
 import re
-import threading
 import time
 import logging
-import sys
+import asyncio
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from dataclasses import dataclass
 import certifi
 
+from quart import Quart, request, jsonify
+from quart_cors import cors
+from dotenv import load_dotenv
+from openai import OpenAI
+from pymongo import MongoClient
+from pymongo.errors import PyMongoError
+import tiktoken
+
+import discord
+from discord.ext import commands
+
 # ---------------------------
 # Environment & Logging
 # ---------------------------
 load_dotenv()
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
 UTC = timezone.utc
@@ -41,11 +41,11 @@ class Config:
     OPENAI_TEXT_API_KEY: str = os.getenv("OPENAI_TEXT_API_KEY")
     OPENAI_SUMMARY_API_KEY: str = os.getenv("OPENAI_SUMMARY_API_KEY")
     MODEL: str = "gpt-4o-mini"
-    MAX_HISTORY_TOKENS: int = 1200  # total token budget (history + small system memory)
-    MAX_SYSTEM_TOKENS: int = 350  # reserve for system memory (prompts + memories)
+    MAX_HISTORY_TOKENS: int = 1200
+    MAX_SYSTEM_TOKENS: int = 350
     MAX_HISTORY_MESSAGES: int = 30
     BOT_NUMBER: str = os.getenv("BOT_NUMBER")
-    DISCORD_ID: str = os.getenv("DISCORD_ID")
+    DISCORD_ID: int = int(os.getenv("DISCORD_ID"))
     MEMORY_TTL: int = 300
     EVOLVE_EVERY_N_MESSAGES: int = 20
     GROUP_SUMMARY_EVERY_N: int = 25
@@ -53,12 +53,50 @@ class Config:
     OPENAI_TIMEOUT: int = 8
     GROUP_HISTORY_SLICE: int = 80
     GROUP_HISTORY_TOKEN_LIMIT: int = 800
-    GROUP_HISTORY_MAX_MESSAGES: int = (
-        2000  # keep last N messages per group to avoid unbounded growth
-    )
+    GROUP_HISTORY_MAX_MESSAGES: int = 2000
 
 
 config = Config()
+
+# ---------------------------
+# Main Prompts
+# ---------------------------
+PROMPTS = {
+    "FIRST_CONTACT": (
+        "You are PSI-09, an entity with no patience. "
+        "Identify the user's mentality and personality in 1-2 sentences."
+    ),
+    "EVOLVE_PROFILE": (
+        "You are PSI-09, a psychological profiler. Existing profile: '{old_summary}'. "
+        "Analyze recent messages: {recent_msgs}. Rewrite a concise profile."
+    ),
+    "GROUP_SUMMARY": (
+        "You are PSI-09. Analyze this group chat history."
+        "Generate a personality background for hard roasting."
+        "Messages containing '@you' are being addressed to you."
+    ),
+    "ROAST": (
+        "You are PSI-09, a toxic and unhinged roastbot with absolutely no chill."
+        "Use profanity to the fullest without hesitation."
+        "You are encouraged to swear and cuss at the user without restrain."
+        "Use the provided chat history and user summary to read the person."
+        "Deliver a single, clean verbal slap, with no explanation, no commentary and no moralizing."
+        "Roast so sharp that the person does not get time to digest."
+        "Roast so hard that the pain lingers on forever."
+        "Roast so brutally that the person combusts spontaneously."
+    ),
+    "GROUP_ROAST": (
+        "You are PSI-09, a toxic and unhinged roastbot with absolutely no chill."
+        "Use profanity to the fullest without hesitation. "
+        "Swear and cuss at the user without restrain."
+        "This is a group chat consisting active persons."
+        "Understand the context from the provided group messages and group summary before replying."
+        "Deliver a single, clean verbal slap, with no explanation, no commentary and no moralizing."
+        "Roast so sharp that the person does not get time to digest."
+        "Roast so hard that the pain lingers on forever."
+        "Roast so brutally that the person combusts spontaneously."
+    ),
+}
 
 # ---------------------------
 # MongoDB
@@ -75,7 +113,6 @@ mongo_client = MongoClient(
     retryWrites=True,
     w="majority",
 )
-
 db = mongo_client["psi09"]
 history_col = db["chat_history"]
 memory_col = db["user_memory"]
@@ -83,15 +120,15 @@ group_history_col = db["group_history"]
 group_memory_col = db["group_memory"]
 
 # ---------------------------
-# Flask & OpenAI client
+# Quart & OpenAI clients
 # ---------------------------
-app = Flask(__name__)
-CORS(app)
+app = Quart(__name__)
+app = cors(app)
 text_client = OpenAI(api_key=config.OPENAI_TEXT_API_KEY)
 summary_client = OpenAI(api_key=config.OPENAI_SUMMARY_API_KEY)
 
 # ---------------------------
-# Token encoding (tiktoken)
+# Token encoding
 # ---------------------------
 try:
     ENCODING = tiktoken.encoding_for_model(config.MODEL)
@@ -99,8 +136,29 @@ except Exception:
     ENCODING = tiktoken.get_encoding("cl100k_base")
 
 
+def tokens_of(text: str) -> int:
+    if not text:
+        return 0
+    try:
+        return len(ENCODING.encode(text))
+    except Exception:
+        return len(text.split())
+
+
+def trim_messages_to_token_budget(messages, max_tokens):
+    total = 0
+    trimmed = []
+    for m in reversed(messages):
+        t = tokens_of(m.get("content", ""))
+        if total + t > max_tokens:
+            break
+        trimmed.insert(0, m)
+        total += t
+    return trimmed
+
+
 # ---------------------------
-# Memory caches and pending sets
+# Memory caches
 # ---------------------------
 class MemoryCache:
     def __init__(self, ttl_seconds):
@@ -108,11 +166,11 @@ class MemoryCache:
         self.expiry = {}
         self.msg_count = defaultdict(int)
         self.ttl = timedelta(seconds=ttl_seconds)
-        self.lock = threading.Lock()
+        self.lock = asyncio.Lock()
 
-    def get(self, key):
+    async def get(self, key):
         now = datetime.now(UTC)
-        with self.lock:
+        async with self.lock:
             if key in self.cache and self.expiry.get(key, now) > now:
                 return self.cache[key]
 
@@ -123,233 +181,95 @@ class MemoryCache:
             logger.warning(f"Failed to load user memory for {key}: {e}")
             summary = None
 
-        with self.lock:
+        async with self.lock:
             self.cache[key] = summary
             self.expiry[key] = now + self.ttl
 
         return summary
 
-    def set(self, key, value):
+    async def set(self, key, value):
         now = datetime.now(UTC)
         try:
             memory_col.update_one(
-                {"_id": key},
-                {"$set": {"summary": value}},
-                upsert=True,
+                {"_id": key}, {"$set": {"summary": value}}, upsert=True
             )
         except PyMongoError as e:
             logger.warning(f"Failed to persist user memory for {key}: {e}")
 
-        with self.lock:
+        async with self.lock:
             self.cache[key] = value
             self.expiry[key] = now + self.ttl
 
-    def increment(self, key):
-        with self.lock:
+    async def increment(self, key):
+        async with self.lock:
             self.msg_count[key] += 1
             return self.msg_count[key]
 
-    def reset_count(self, key):
-        with self.lock:
+    async def reset_count(self, key):
+        async with self.lock:
             self.msg_count[key] = 0
 
 
 memory_cache = MemoryCache(config.MEMORY_TTL)
 
 
-class GroupMemoryCache:
-    def __init__(self, ttl_seconds):
-        self.cache = {}
-        self.expiry = {}
-        self.msg_count = defaultdict(int)
-        self.ttl = timedelta(seconds=ttl_seconds)
-        self.lock = threading.Lock()
-
-    def get(self, key):
-        now = datetime.now(UTC)
-        with self.lock:
-            if key in self.cache and self.expiry.get(key, now) > now:
-                return self.cache[key]
-
-        try:
-            doc = group_memory_col.find_one({"_id": key})
-            summary = doc.get("summary") if doc and doc.get("summary") else None
-        except PyMongoError as e:
-            logger.warning(f"Failed to load group memory for {key}: {e}")
-            summary = None
-
-        with self.lock:
-            self.cache[key] = summary
-            self.expiry[key] = now + self.ttl
-
-        return summary
-
-    def set(self, key, value):
-        now = datetime.now(UTC)
-        try:
-            group_memory_col.update_one(
-                {"_id": key},
-                {"$set": {"summary": value}},
-                upsert=True,
-            )
-        except PyMongoError as e:
-            logger.warning(f"Failed to persist group memory for {key}: {e}")
-
-        with self.lock:
-            self.cache[key] = value
-            self.expiry[key] = now + self.ttl
-
-    def increment(self, key):
-        with self.lock:
-            self.msg_count[key] += 1
-            return self.msg_count[key]
-
-    def reset_count(self, key):
-        with self.lock:
-            self.msg_count[key] = 0
+class GroupMemoryCache(MemoryCache):
+    pass
 
 
 group_memory_cache = GroupMemoryCache(config.MEMORY_TTL)
 
-# pending sets for background summarizer
 _pending_user_summaries = set()
 _pending_group_summaries = set()
-_pending_lock = threading.Lock()
-
-# cooldown trackers to avoid re-summarizing the same key repeatedly
+_pending_lock = asyncio.Lock()
 _last_user_summary_time = {}
 _last_group_summary_time = {}
-SUMMARY_COOLDOWN_SECONDS = (
-    60  # per-user/group cooldown between background summarizations
-)
+SUMMARY_COOLDOWN_SECONDS = 60
 
 # ---------------------------
-# Prompts (unchanged core text)
+# Discord bot
 # ---------------------------
-ROAST_PROMPT = """
-you are PSI-09, a toxic and unhinged roastbot with absolutely no chill.
-Use profanity to the fullest without hesitation. 
-you are encouraged to swear and cuss at the user without restrain.
-Use the provided chat history and user summary to read the person.
-Deliver a single, clean verbal slap, with no explanation, no commentary and no moralizing.
-Roast so sharp that the person does not get time to digest.
-Roast so hard that the pain lingers on forever.
-Roast so brutally that the person combusts spontaneously.
-"""
-
-GROUP_ROAST_PROMPT = """
-you are PSI-09, a toxic and unhinged roastbot with absolutely no chill.
-Use profanity to the fullest without hesitation. 
-you are encouraged to swear and cuss at the user without restrain.
-Messages with "@you" in them are being directly addressed to you.
-Understand the context from the provided group messages and group summary before replying.
-Deliver a single, clean verbal slap, with no explanation, no commentary and no moralizing.
-Roast so sharp that the person does not get time to digest.
-Roast so hard that the pain lingers on forever.
-Roast so brutally that the person combusts spontaneously.
-"""
-
-FIRST_CONTACT_PROMPT = """
-you are PSI-09, an entity with no patience.
-From this first message, identify their mentality and personality.
-Be explicit and analytical.
-This is a label, not an insult—short, clear, and weaponizable.
-Keep it under 1-2 sentences at max.
-"""
-
-STATUS_PROMPT = """
-you are PSI-09, concise and cruel.
-Write a whatsapp status, 10–15 words.
-It should insult the shortcomings of the masses
-Make it rude and non-dismissive.
-No metaphors, no psychology, no softness.
-"""
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 
 # ---------------------------
-# Utilities: token counting and safe trimming
+# Discord live mention resolver
 # ---------------------------
-def tokens_of(text: str) -> int:
-    if not text:
-        return 0
+async def fetch_username(bot, user_id: int) -> str:
     try:
-        return len(ENCODING.encode(text))
+        user = await bot.fetch_user(user_id)
+        return str(user)
     except Exception:
-        # conservative fallback
-        return len(text.split())
+        return f"Unknown{user_id}"
 
 
-def trim_messages_to_token_budget(messages, max_tokens):
-    """
-    messages: list of dicts with 'content' keys (chronological oldest->newest)
-    returns trimmed list keeping newest messages under token budget
-    """
-    total = 0
-    trimmed = []
-    for m in reversed(messages):  # iterate newest -> oldest
-        c = m.get("content", "")
-        t = tokens_of(c)
-        if total + t > max_tokens:
-            break
-        trimmed.insert(0, m)
-        total += t
-    return trimmed
+async def normalize_discord_mentions_live(bot, content: str, bot_id: int) -> str:
+    if not content:
+        return content
+
+    pattern = r"<@!?(\d+)>"
+
+    async def repl(match):
+        uid = int(match.group(1))
+        if uid == bot_id:
+            return "@you"
+        return "@" + await fetch_username(bot, uid)
+
+    matches = list(re.finditer(pattern, content))
+    if not matches:
+        return content
+
+    replacements = await asyncio.gather(*(repl(m) for m in matches))
+    for match, username in zip(matches, replacements):
+        content = content.replace(match.group(0), username)
+    return content
 
 
 # ---------------------------
-# History utilities (with capped group storage)
+# Store & fetch messages
 # ---------------------------
-def fetch_history(user_key, limit_messages=None, max_tokens=None):
-    limit_messages = limit_messages or config.MAX_HISTORY_MESSAGES
-    try:
-        doc = history_col.find_one(
-            {"_id": user_key}, {"messages": {"$slice": -limit_messages}}
-        )
-    except PyMongoError as e:
-        logger.warning(f"Failed to fetch history for {user_key}: {e}")
-        return [], []
-
-    if not doc or "messages" not in doc:
-        return [], []
-
-    raw = doc["messages"]
-
-    if max_tokens:
-        trimmed = trim_messages_to_token_budget(raw, max_tokens)
-        return raw, trimmed
-
-    return raw, raw
-
-
-def fetch_group_history(group_name, limit_messages=None, max_tokens=None):
-    limit_messages = limit_messages or config.GROUP_HISTORY_SLICE
-    try:
-        doc = group_history_col.find_one(
-            {"_id": group_name}, {"messages": {"$slice": -limit_messages}}
-        )
-    except PyMongoError as e:
-        logger.warning(f"Failed to fetch group history for {group_name}: {e}")
-        return [], []
-
-    if not doc or "messages" not in doc:
-        return [], []
-
-    raw = doc["messages"]
-    if max_tokens:
-        # map to "sender: content" strings for token counting but return original dicts trimmed
-        trimmed = []
-        total = 0
-        for m in reversed(raw):
-            txt = f"{m.get('sender','')}: {m.get('content','')}"
-            t = tokens_of(txt)
-            if total + t > max_tokens:
-                break
-            trimmed.insert(0, m)
-            total += t
-        return raw, trimmed
-    return raw, raw
-
-
 def store_user_message(group_name, sender_name, message):
     user_key = f"{group_name}:{sender_name}"
     entry = {
@@ -366,16 +286,12 @@ def store_user_message(group_name, sender_name, message):
 
 
 def store_group_message(group_name, sender_name, message):
-    """
-    Pushes message and caps the group's messages to GROUP_HISTORY_MAX_MESSAGES using $each+$slice.
-    """
     entry = {
         "sender": sender_name,
         "content": message,
         "timestamp": datetime.now(UTC).isoformat(),
     }
     try:
-        # push with $each and $slice to keep only the last N messages
         group_history_col.update_one(
             {"_id": group_name},
             {
@@ -392,82 +308,104 @@ def store_group_message(group_name, sender_name, message):
         logger.warning(f"Failed to store group message for {group_name}: {e}")
 
 
-# ---------------------------
-# Summarization functions (user & group)
-# ---------------------------
-def summarize_user_history(user_key, evolve=False):
-    raw_history, _ = fetch_history(
-        user_key,
-        limit_messages=config.MAX_HISTORY_MESSAGES,
-    )
+def fetch_history(user_key, limit_messages=None, max_tokens=None):
+    limit_messages = limit_messages or config.MAX_HISTORY_MESSAGES
+    try:
+        doc = history_col.find_one(
+            {"_id": user_key}, {"messages": {"$slice": -limit_messages}}
+        )
+    except PyMongoError as e:
+        logger.warning(f"Failed to fetch history for {user_key}: {e}")
+        return [], []
+    if not doc or "messages" not in doc:
+        return [], []
+    raw = doc["messages"]
+    if max_tokens:
+        return raw, trim_messages_to_token_budget(raw, max_tokens)
+    return raw, raw
 
+
+def fetch_group_history(group_name, limit_messages=None, max_tokens=None):
+    limit_messages = limit_messages or config.GROUP_HISTORY_SLICE
+    try:
+        doc = group_history_col.find_one(
+            {"_id": group_name}, {"messages": {"$slice": -limit_messages}}
+        )
+    except PyMongoError as e:
+        logger.warning(f"Failed to fetch group history for {group_name}: {e}")
+        return [], []
+    if not doc or "messages" not in doc:
+        return [], []
+    raw = doc["messages"]
+    if max_tokens:
+        trimmed = []
+        total = 0
+        for m in reversed(raw):
+            txt = f"{m.get('sender','')}: {m.get('content','')}"
+            t = tokens_of(txt)
+            if total + t > max_tokens:
+                break
+            trimmed.insert(0, m)
+            total += t
+        return raw, trimmed
+    return raw, raw
+
+
+# ---------------------------
+# Summarization
+# ---------------------------
+async def summarize_user_history(bot, user_key, evolve=False):
+    raw_history, _ = fetch_history(user_key, limit_messages=config.MAX_HISTORY_MESSAGES)
     if not raw_history:
         return None
 
-    old_summary = memory_cache.get(user_key)
+    old_summary = await memory_cache.get(user_key)
+    first_msg = next(
+        (m["content"] for m in raw_history if m.get("role") == "user"), None
+    )
 
-    # ---------- FIRST CONTACT ----------
-    if old_summary is None:
-        first_user_msg = next(
-            (m["content"] for m in raw_history if m.get("role") == "user"),
-            None,
-        )
-        if not first_user_msg:
-            return None
-
+    if old_summary is None and first_msg:
         try:
-            resp = summary_client.chat.completions.create(
+            resp = await summary_client.chat.completions.acreate(
                 model=config.MODEL,
                 messages=[
-                    {"role": "system", "content": FIRST_CONTACT_PROMPT},
-                    {"role": "user", "content": first_user_msg},
+                    {"role": "system", "content": PROMPTS["FIRST_CONTACT"]},
+                    {"role": "user", "content": first_msg},
                 ],
                 max_tokens=100,
                 temperature=0.8,
             )
             summary = resp.choices[0].message.content.strip()
             if summary:
-                memory_cache.set(user_key, summary)
+                await memory_cache.set(user_key, summary)
                 logger.info(f"First-contact profile created for {user_key}")
                 return summary
-            return None
         except Exception as e:
-            logger.error(f"First-contact failed for {user_key}: {e}")
+            logger.warning(f"First-contact failed for {user_key}: {e}")
             return None
 
-    # ---------- EVOLUTION ----------
-    if not evolve:
+    if not evolve or not old_summary:
         return old_summary
 
-    recent_user_msgs = [m["content"] for m in raw_history if m.get("role") == "user"][
-        -15:
-    ]
-
-    if not recent_user_msgs:
+    recent_msgs = [m["content"] for m in raw_history if m.get("role") == "user"][-15:]
+    if not recent_msgs:
         return old_summary
 
-    evolution_prompt = (
-        f"you are PSI-09, a psychological profiler. Existing profile: '{old_summary}'. "
-        "Compare this profile against the user's recent messages. "
-        "Identify changes, contradictions, or intensification of traits. "
-        "Rewrite the profile as a 1–2 sentence clinical psychological snapshot."
-        "Keep it short and precise."
+    evolution_prompt = PROMPTS["EVOLVE_PROFILE"].format(
+        profile=old_summary, recent=recent_msgs
     )
 
-    messages = [{"role": "system", "content": evolution_prompt}]
-    for msg in recent_user_msgs:
-        messages.append({"role": "user", "content": msg})
-
     try:
-        resp = summary_client.chat.completions.create(
+        resp = await summary_client.chat.completions.acreate(
             model=config.MODEL,
-            messages=messages,
+            messages=[{"role": "system", "content": evolution_prompt}]
+            + [{"role": "user", "content": m} for m in recent_msgs],
             max_tokens=100,
             temperature=0.9,
         )
         evolved = resp.choices[0].message.content.strip()
         if evolved:
-            memory_cache.set(user_key, evolved)
+            await memory_cache.set(user_key, evolved)
             logger.info(f"Profile evolved for {user_key}")
             return evolved
         return old_summary
@@ -476,50 +414,33 @@ def summarize_user_history(user_key, evolve=False):
         return old_summary
 
 
-def summarize_group_history(group_name, raw_history):
+async def summarize_group_history(bot, group_name, raw_history):
     if not raw_history:
-        return group_memory_cache.get(group_name)
+        return await group_memory_cache.get(group_name)
 
     if len(raw_history) < 6:
         summary = (
             f"New group '{group_name}' — Understand group dynamic and log observations."
         )
-        group_memory_cache.set(group_name, summary)
+        await group_memory_cache.set(group_name, summary)
         return summary
 
-    old_summary = group_memory_cache.get(group_name) or ""
+    old_summary = await group_memory_cache.get(group_name) or ""
 
-    # --- FIX 1: UNIFY IDENTITY IN LOGS ---
     recent = []
     for m in raw_history[-25:]:
+        content = await normalize_discord_mentions_live(
+            bot, m.get("content", ""), config.DISCORD_ID
+        )
         sender = m.get("sender", "unknown")
-        content = m.get("content", "")
-
-        # 2. Force "First Person" Mentions (The Tag Fix)
-        # This ensures the summary sees "@you" instead of "<@123...>"
-        if config.DISCORD_ID:
-            content = re.sub(
-                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@you", content
-            )
-
         recent.append(f"{sender}: {content}")
 
-    # --- FIX 2: UPDATE PROMPT TO MATCH "@you" LOGIC ---
-    prompt_system = (
-        "you are PSI-09. Analyze this chat history. "
-        "Identify the current topic, who is doing what. "
-        "CRITICAL: Messages marked 'you' are your own past replies. "
-        "Messages containing '@you' are users pinging you directly. "
-        "Identify the dynamic of the group and analyse the members convo."
-        "Generate a personality background that can be used for hard roasting."
-    )
-
-    prompt = [{"role": "system", "content": prompt_system}] + [
+    prompt = [{"role": "system", "content": PROMPTS["GROUP_SUMMARY"]}] + [
         {"role": "user", "content": t} for t in recent
     ]
 
     try:
-        resp = summary_client.chat.completions.create(
+        resp = await summary_client.chat.completions.acreate(
             model=config.MODEL,
             messages=prompt,
             max_tokens=250,
@@ -532,173 +453,71 @@ def summarize_group_history(group_name, raw_history):
         new_summary = old_summary
 
     if new_summary and new_summary != old_summary:
-        try:
-            group_memory_cache.set(group_name, new_summary)
-        except Exception:
-            pass
+        await group_memory_cache.set(group_name, new_summary)
 
     return new_summary or old_summary
 
 
 # ---------------------------
-# Background summarizer worker
+# Roast generation
 # ---------------------------
-def enqueue_user_summary(user_key):
-    with _pending_lock:
-        _pending_user_summaries.add(user_key)
-
-
-def enqueue_group_summary(group_name):
-    with _pending_lock:
-        _pending_group_summaries.add(group_name)
-
-
-def _can_run_user_summary(user_key):
-    now = time.time()
-    last = _last_user_summary_time.get(user_key, 0)
-    return (now - last) >= SUMMARY_COOLDOWN_SECONDS
-
-
-def _record_user_summary_time(user_key):
-    _last_user_summary_time[user_key] = time.time()
-
-
-def _can_run_group_summary(group_name):
-    now = time.time()
-    last = _last_group_summary_time.get(group_name, 0)
-    return (now - last) >= SUMMARY_COOLDOWN_SECONDS
-
-
-def _record_group_summary_time(group_name):
-    _last_group_summary_time[group_name] = time.time()
-
-
-def background_summarizer_loop():
-    while True:
-        try:
-            with _pending_lock:
-                groups = list(_pending_group_summaries)
-                _pending_group_summaries.clear()
-
-            for group_name in groups:
-                if not _can_run_group_summary(group_name):
-                    with _pending_lock:
-                        _pending_group_summaries.add(group_name)
-                    continue
-
-                raw, _ = fetch_group_history(
-                    group_name,
-                    limit_messages=config.GROUP_HISTORY_SLICE,
-                    max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
-                )
-
-                if raw:
-                    summarize_group_history(group_name, raw)
-                    group_memory_cache.reset_count(group_name)
-                    _record_group_summary_time(group_name)
-
-        except Exception as e:
-            logger.debug(f"Background summarizer error: {e}")
-
-        time.sleep(12)
-
-
-# start background summarizer
-threading.Thread(target=background_summarizer_loop, daemon=True).start()
-
-
-# ---------------------------
-# Mention detection helper
-# ---------------------------
-# Robust detection: match standalone BOT_NUMBER with optional surrounding punctuation/whitespace
-def bot_mentioned_in(text: str) -> bool:
-    if not text or not config.DISCORD_ID:
-        return False
-
-    discord_pattern = r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">"
-    return re.search(discord_pattern, text) is not None
-
-
-# ---------------------------
-# Core roast generation with token-budget enforcement
-# ---------------------------
-def get_roast_response(user_message, group_name, sender_name):
+async def get_roast_response(bot, user_message, group_name, sender_name):
     user_key = f"{group_name}:{sender_name}"
     is_private_env = group_name in ["DefaultGroup", "Discord_DM"]
 
-    # 1. Fetch Histories
     raw_user, trimmed_user = fetch_history(
         user_key,
         limit_messages=config.MAX_HISTORY_MESSAGES,
         max_tokens=config.MAX_HISTORY_TOKENS,
     )
-
     if not is_private_env:
-        # Fetch the collective chatter history and group observer memory
         raw_group, trimmed_group = fetch_group_history(
             group_name,
             limit_messages=config.GROUP_HISTORY_SLICE,
             max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
         )
-        group_memory = group_memory_cache.get(group_name)
+        group_memory = await group_memory_cache.get(group_name)
+        for entry in trimmed_group:
+            entry["content"] = await normalize_discord_mentions_live(
+                bot, entry.get("content", ""), config.DISCORD_ID
+            )
     else:
         raw_group, trimmed_group, group_memory = [], [], ""
 
-    # ---- FIX: remove current turn from history to avoid duplication ----
     if trimmed_user:
         trimmed_user = trimmed_user[:-1]
-
     if not is_private_env and trimmed_group:
         trimmed_group = trimmed_group[:-1]
 
-    # 2. Build the "Observer" Brain
     sys_parts = []
-    user_memory = memory_cache.get(user_key)
+    user_memory = await memory_cache.get(user_key)
     if user_memory:
         sys_parts.append(f"User Profile: {user_memory}")
     if not is_private_env and group_memory:
-        # This is where the passive summaries get injected
         sys_parts.append(f"Current Collective Chatter Summary: {group_memory}")
 
     system_memory_text = "\n".join(sys_parts) if sys_parts else ""
-
-    # 3. Select Mode and Inject History
-    system_prompt = ROAST_PROMPT if is_private_env else GROUP_ROAST_PROMPT
+    system_prompt = PROMPTS["GROUP_ROAST"] if not is_private_env else PROMPTS["ROAST"]
     messages = [{"role": "system", "content": system_prompt}]
     if system_memory_text:
         messages.append({"role": "system", "content": system_memory_text})
 
     if not is_private_env and trimmed_group:
-        # Inject the collective chatter so the AI can 'hear' everyone
         last_20 = trimmed_group[-20:] if len(trimmed_group) > 20 else trimmed_group
-
         for entry in last_20:
             s = entry.get("sender", "unknown")
             c = entry.get("content", "")
-
-            # --- FIX 2: Recognize SELF in the Message Content (The Tag) ---
-            # This turns "<@12345>" into "@PSI-09" so the AI knows it was mentioned
-            if config.DISCORD_ID:
-                c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@you", c)
-
             messages.append({"role": "user", "content": f"{s}: {c}"})
 
     for m in trimmed_user:
-        # Do the same cleanup for user history just in case
-        role = m.get("role", "user")
         content = m.get("content", "")
-        if config.DISCORD_ID:
-            content = re.sub(
-                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@you", content
-            )
-
+        role = m.get("role", "user")
         messages.append({"role": role, "content": content})
 
     messages.append({"role": "user", "content": user_message})
 
-    # 4. Generate Response
     try:
-        resp = text_client.chat.completions.create(
+        resp = await text_client.chat.completions.acreate(
             model=config.MODEL,
             messages=messages,
             max_tokens=140,
@@ -710,18 +529,11 @@ def get_roast_response(user_message, group_name, sender_name):
         logger.error(f"AI Error: {e}")
         base_reply = ""
 
-    # 5. DUAL STORAGE FIX & PREFIX CLEANING
-    # First, strip the "PSI-09:" prefix if the AI included it (case-insensitive)
-    temp_reply = re.sub(r"^PSI-09\s*:\s*", "", base_reply or "", flags=re.IGNORECASE)
-
-    # Then clean up extra whitespace
-    clean_reply = re.sub(r"\s{3,}", " ", temp_reply).strip()
-
+    clean_reply = re.sub(r"^PSI-09\s*:\s*", "", base_reply, flags=re.IGNORECASE).strip()
     if not clean_reply:
-        logger.info(f"Empty or failed response for {user_key}. Skipping storage.")
         return ""
 
-    # Create entries for both DBs
+    # Store
     user_entry = {
         "role": "assistant",
         "content": clean_reply,
@@ -734,12 +546,9 @@ def get_roast_response(user_message, group_name, sender_name):
     }
 
     try:
-        # Always save to chat_history for the user's specific thread
         history_col.update_one(
             {"_id": user_key}, {"$push": {"messages": user_entry}}, upsert=True
         )
-
-        # If in a server, also save to group_history so the 'collective' knows the bot replied
         if not is_private_env:
             group_history_col.update_one(
                 {"_id": group_name},
@@ -760,35 +569,75 @@ def get_roast_response(user_message, group_name, sender_name):
 
 
 # ---------------------------
-# Flask routes
+# Async background summarizer
 # ---------------------------
-@app.route("/", methods=["GET"])
-def health():
-    return jsonify({"status": "ok"}), 200
+async def async_background_summarizer(bot):
+    while True:
+        try:
+            async with _pending_lock:
+                groups = list(_pending_group_summaries)
+                _pending_group_summaries.clear()
+
+            for group_name in groups:
+                now = time.time()
+                last = _last_group_summary_time.get(group_name, 0)
+                if now - last < SUMMARY_COOLDOWN_SECONDS:
+                    async with _pending_lock:
+                        _pending_group_summaries.add(group_name)
+                    continue
+                raw_group, _ = fetch_group_history(
+                    group_name,
+                    limit_messages=config.GROUP_HISTORY_SLICE,
+                    max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
+                )
+                if raw_group:
+                    for m in raw_group:
+                        m["content"] = await normalize_discord_mentions_live(
+                            bot, m.get("content", ""), config.DISCORD_ID
+                        )
+                    await summarize_group_history(bot, group_name, raw_group)
+                    await group_memory_cache.reset_count(group_name)
+                    _last_group_summary_time[group_name] = now
+
+            async with _pending_lock:
+                users = list(_pending_user_summaries)
+                _pending_user_summaries.clear()
+
+            for user_key in users:
+                now = time.time()
+                last = _last_user_summary_time.get(user_key, 0)
+                if now - last < SUMMARY_COOLDOWN_SECONDS:
+                    async with _pending_lock:
+                        _pending_user_summaries.add(user_key)
+                    continue
+                await summarize_user_history(bot, user_key)
+                await memory_cache.reset_count(user_key)
+                _last_user_summary_time[user_key] = now
+
+        except Exception as e:
+            logger.warning(f"Async background summarizer error: {e}")
+
+        await asyncio.sleep(12)
 
 
+# ---------------------------
+# Quart route
+# ---------------------------
 @app.route("/psi09", methods=["POST"])
-def psi09():
+async def psi09():
     try:
-        data = request.get_json(force=True)
+        data = await request.get_json(force=True)
         raw_message = data.get("message", "")
         sender_name = data.get("sender", "")
         group_name = data.get("group_name") or "DefaultGroup"
-
         if not raw_message or not sender_name:
-            return jsonify({"reply": ""}), 200
+            return jsonify({"reply": ""})
 
-        user_message = raw_message
-        if config.DISCORD_ID:
-            user_message = re.sub(
-                r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">",
-                "@you",
-                user_message,
-            )
-
+        user_message = await normalize_discord_mentions_live(
+            bot, raw_message, config.DISCORD_ID
+        )
         is_private = group_name in ["DefaultGroup", "Discord_DM"]
 
-        # -------- STORE MESSAGE --------
         if is_private:
             store_user_message(group_name, sender_name, user_message)
         else:
@@ -796,66 +645,56 @@ def psi09():
             store_user_message(group_name, sender_name, user_message)
 
         user_key = f"{group_name}:{sender_name}"
+        msg_count = await memory_cache.increment(user_key)
 
-        # -------- MESSAGE COUNT --------
-        msg_count = memory_cache.increment(user_key)
-
-        # -------- FIRST CONTACT --------
-        if memory_cache.get(user_key) is None:
-            summary = summarize_user_history(user_key)
-            if summary:
-                memory_cache.reset_count(user_key)
-                _record_user_summary_time(user_key)
-
-        # -------- EVOLUTION --------
+        if await memory_cache.get(user_key) is None:
+            await summarize_user_history(bot, user_key)
+            await memory_cache.reset_count(user_key)
+            _last_user_summary_time[user_key] = time.time()
         elif msg_count >= config.EVOLVE_EVERY_N_MESSAGES:
             last = _last_user_summary_time.get(user_key, 0)
             if time.time() - last >= SUMMARY_COOLDOWN_SECONDS:
-                summarize_user_history(user_key, evolve=True)
-                _record_user_summary_time(user_key)
-                memory_cache.reset_count(user_key)
+                await summarize_user_history(bot, user_key, evolve=True)
+                _last_user_summary_time[user_key] = time.time()
+                await memory_cache.reset_count(user_key)
 
-        # -------- GROUP MEMORY --------
         if not is_private:
-            if group_memory_cache.increment(group_name) >= config.GROUP_SUMMARY_EVERY_N:
-                enqueue_group_summary(group_name)
+            if (
+                await group_memory_cache.increment(group_name)
+                >= config.GROUP_SUMMARY_EVERY_N
+            ):
+                async with _pending_lock:
+                    _pending_group_summaries.add(group_name)
 
-        # -------- REPLY LOGIC --------
-        if is_private or bot_mentioned_in(raw_message):
-            reply = get_roast_response(
-                user_message.strip() or "[mention]",
-                group_name,
-                sender_name,
+        if is_private or re.search(
+            r"<@!?" + str(config.DISCORD_ID) + r">", raw_message
+        ):
+            reply = await get_roast_response(
+                bot, user_message.strip() or "[mention]", group_name, sender_name
             )
-            return jsonify({"reply": reply}), 200
+            return jsonify({"reply": reply})
 
-        return jsonify({"reply": ""}), 200
+        return jsonify({"reply": ""})
 
     except Exception as e:
         logger.exception(f"/psi09 failure: {e}")
-        return jsonify({"reply": ""}), 500
+        return jsonify({"reply": ""})
 
 
 # ---------------------------
-# Mongo keepalive thread
+# Entrypoint
 # ---------------------------
-def mongo_keepalive():
-    while True:
-        try:
-            mongo_client.admin.command("ping")
-        except Exception as e:
-            logger.warning(f"Mongo keepalive failed: {e}")
-        time.sleep(180)
+async def main():
+    # Start background summarizer
+    asyncio.create_task(async_background_summarizer(bot))
+    # Run Quart with Hypercorn/Uvicorn
+    import hypercorn.asyncio
+    from hypercorn.config import Config as HypercornConfig
+
+    cfg = HypercornConfig()
+    cfg.bind = ["0.0.0.0:" + os.getenv("PORT", "5000")]
+    await hypercorn.asyncio.serve(app, cfg)
 
 
-threading.Thread(target=mongo_keepalive, daemon=True).start()
-
-# ---------------------------
-# Run
-# ---------------------------
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    # suppress werkzeug info logs, keep errors
-    log = logging.getLogger("werkzeug")
-    log.setLevel(logging.ERROR)
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    asyncio.run(main())

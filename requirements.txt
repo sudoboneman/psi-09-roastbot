@@ -1,9 +1,10 @@
-flask
-flask-cors
+quart
+quart-cors
 python-dotenv
-google-genai
 openai
 pymongo
 tiktoken
 certifi
-gunicorn
+discord.py
+hypercorn
+
