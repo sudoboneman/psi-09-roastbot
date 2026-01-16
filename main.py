@@ -423,7 +423,7 @@ def summarize_user_history(user_key, evolve=False):
                     {"role": "user", "content": first_user_msg},
                 ],
                 max_completion_tokens=100,
-                temperature=0.8,
+                temperature=1,
             )
             summary = resp.choices[0].message.content.strip()
             if summary:
@@ -463,7 +463,7 @@ def summarize_user_history(user_key, evolve=False):
             model=config.MODEL,
             messages=messages,
             max_completion_tokens=100,
-            temperature=0.9,
+            temperature=1,
         )
         evolved = resp.choices[0].message.content.strip()
         if evolved:
@@ -521,7 +521,7 @@ def summarize_group_history(group_name, raw_history):
             model=config.MODEL,
             messages=prompt,
             max_completion_tokens=175,
-            temperature=1.0,
+            temperature=1,
             timeout=6,
         )
         new_summary = resp.choices[0].message.content.strip()
@@ -700,7 +700,7 @@ def get_roast_response(user_message, group_name, sender_name):
             model=config.MODEL,
             messages=messages,
             max_completion_tokens=140,
-            temperature=0.9,
+            temperature=1,
             timeout=config.OPENAI_TIMEOUT,
         )
         base_reply = resp.choices[0].message.content.strip()
