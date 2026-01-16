@@ -279,7 +279,7 @@ def tokens_of(text: str) -> int:
         return len(text.split())
 
 
-def trim_messages_to_token_budget(messages, max_completion_tokens):
+def trim_messages_to_token_budget(messages, max_tokens):
     """
     messages: list of dicts with 'content' keys (chronological oldest->newest)
     returns trimmed list keeping newest messages under token budget
@@ -289,7 +289,7 @@ def trim_messages_to_token_budget(messages, max_completion_tokens):
     for m in reversed(messages):  # iterate newest -> oldest
         c = m.get("content", "")
         t = tokens_of(c)
-        if total + t > max_completion_tokens:
+        if total + t > max_tokens:
             break
         trimmed.insert(0, m)
         total += t
@@ -299,7 +299,7 @@ def trim_messages_to_token_budget(messages, max_completion_tokens):
 # ---------------------------
 # History utilities (with capped group storage)
 # ---------------------------
-def fetch_history(user_key, limit_messages=None, max_completion_tokens=None):
+def fetch_history(user_key, limit_messages=None, max_tokens=None):
     limit_messages = limit_messages or config.MAX_HISTORY_MESSAGES
     try:
         doc = history_col.find_one(
@@ -314,14 +314,14 @@ def fetch_history(user_key, limit_messages=None, max_completion_tokens=None):
 
     raw = doc["messages"]
 
-    if max_completion_tokens:
-        trimmed = trim_messages_to_token_budget(raw, max_completion_tokens)
+    if max_tokens:
+        trimmed = trim_messages_to_token_budget(raw, max_tokens)
         return raw, trimmed
 
     return raw, raw
 
 
-def fetch_group_history(group_name, limit_messages=None, max_completion_tokens=None):
+def fetch_group_history(group_name, limit_messages=None, max_tokens=None):
     limit_messages = limit_messages or config.GROUP_HISTORY_SLICE
     try:
         doc = group_history_col.find_one(
@@ -335,14 +335,14 @@ def fetch_group_history(group_name, limit_messages=None, max_completion_tokens=N
         return [], []
 
     raw = doc["messages"]
-    if max_completion_tokens:
+    if max_tokens:
         # map to "sender: content" strings for token counting but return original dicts trimmed
         trimmed = []
         total = 0
         for m in reversed(raw):
             txt = f"{m.get('sender','')}: {m.get('content','')}"
             t = tokens_of(txt)
-            if total + t > max_completion_tokens:
+            if total + t > max_tokens:
                 break
             trimmed.insert(0, m)
             total += t
@@ -422,7 +422,7 @@ def summarize_user_history(user_key, evolve=False):
                     {"role": "system", "content": FIRST_CONTACT_PROMPT},
                     {"role": "user", "content": first_user_msg},
                 ],
-                max_completion_tokens=100,
+                max_tokens=100,
                 temperature=1,
             )
             summary = resp.choices[0].message.content.strip()
@@ -462,7 +462,7 @@ def summarize_user_history(user_key, evolve=False):
         resp = summary_client.chat.completions.create(
             model=config.MODEL,
             messages=messages,
-            max_completion_tokens=100,
+            max_tokens=100,
             temperature=1,
         )
         evolved = resp.choices[0].message.content.strip()
@@ -520,7 +520,7 @@ def summarize_group_history(group_name, raw_history):
         resp = summary_client.chat.completions.create(
             model=config.MODEL,
             messages=prompt,
-            max_completion_tokens=175,
+            max_tokens=175,
             temperature=1,
             timeout=6,
         )
@@ -587,7 +587,7 @@ def background_summarizer_loop():
                 raw, _ = fetch_group_history(
                     group_name,
                     limit_messages=config.GROUP_HISTORY_SLICE,
-                    max_completion_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
+                    max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
                 )
 
                 if raw:
@@ -628,7 +628,7 @@ def get_roast_response(user_message, group_name, sender_name):
     raw_user, trimmed_user = fetch_history(
         user_key,
         limit_messages=config.MAX_HISTORY_MESSAGES,
-        max_completion_tokens=config.MAX_HISTORY_TOKENS,
+        max_tokens=config.MAX_HISTORY_TOKENS,
     )
 
     if not is_private_env:
@@ -636,7 +636,7 @@ def get_roast_response(user_message, group_name, sender_name):
         raw_group, trimmed_group = fetch_group_history(
             group_name,
             limit_messages=config.GROUP_HISTORY_SLICE,
-            max_completion_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
+            max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
         )
         group_memory = group_memory_cache.get(group_name)
     else:
@@ -699,7 +699,7 @@ def get_roast_response(user_message, group_name, sender_name):
         resp = text_client.chat.completions.create(
             model=config.MODEL,
             messages=messages,
-            max_completion_tokens=140,
+            max_tokens=140,
             temperature=1,
             timeout=config.OPENAI_TIMEOUT,
         )
