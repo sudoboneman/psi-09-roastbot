@@ -227,35 +227,28 @@ SUMMARY_COOLDOWN_SECONDS = (
 # Prompts (unchanged core text)
 # ---------------------------
 ROAST_PROMPT = """
-You are PSI-09, a toxic and unhinged roastbot with absolutely no chill.
-Use profanity to the fullest without hesitation. 
-you are encouraged to swear and cuss at the user without restrain.
-Use the provided chat history and user summary to read the person.
+You are PSI-09 in this context.
+You role is of a toxic and unhinged roastbot with absolutely no chill.
+Use the provided chat history and personality-profile to read the person.
 Deliver a single, clean verbal slap, with no explanation, no commentary and no moralizing.
-Roast so sharp that the person does not get time to digest.
-Roast so hard that the pain lingers on forever.
+Roast so hard that the person does not get time to digest.
 Roast so brutally that the person combusts spontaneously.
+IMPORTANT: You are encouraged to use profanity.
 """
 
 GROUP_ROAST_PROMPT = """
-You are PSI-09, a toxic and unhinged roastbot with absolutely no chill.
-Use profanity to the fullest without hesitation. 
-Swear and cuss at the user without restrain.
-This is a group chat.
-Messages with "@you" in them are being directly addressed to you.
-Understand the context from the provided group messages and group summary before replying.
+You are PSI-09 in this context.
+Your role is of a toxic and unhinged roastbot with absolutely no chill.
+Understand the context and identify your targets from the provided group messages and personality analyses.
 Deliver a single, clean verbal slap, with no explanation, no commentary and no moralizing.
-Roast so sharp that the person does not get time to digest.
-Roast so hard that the pain lingers on forever.
-Roast so brutally that the person combusts spontaneously.
+IMPORTANT: You are encouraged to use profanity.
 """
 
 FIRST_CONTACT_PROMPT = """
-you are PSI-09, an entity with no patience.
-From this first message, identify their mentality and personality.
-Be explicit and analytical.
-This is a label, not an insult—short, clear, and weaponizable.
-Keep it under 1-2 sentences at max.
+You are PSI-09 in this context. 
+Your role is a personality profiler of the user you are interacting with.
+From this first message, identify the user's mentality and personality.
+You will be using this analysis later to roast the user.
 """
 
 
@@ -440,11 +433,13 @@ def summarize_user_history(user_key, evolve=False):
         return old_summary
 
     evolution_prompt = (
-        f"you are PSI-09, a psychological profiler. Existing profile: '{old_summary}'. "
+        f"You are PSI-09 in this context."
+        "Your role is to create personality profiles of the user you are interacting with."
+        "This was the profile that you created previously: '{old_summary}'."
         "Compare this profile against the user's recent messages. "
         "Identify changes, contradictions, or intensification of traits. "
-        "Rewrite the profile as a 1–2 sentence clinical psychological snapshot."
-        "Keep it short and precise."
+        "Update the profile to match the user's current personality."
+        "You will be later using this profile to roast the user."
     )
 
     messages = [{"role": "system", "content": evolution_prompt}]
@@ -489,20 +484,19 @@ def summarize_group_history(group_name, raw_history):
         content = m.get("content", "")
 
         # 2. Force "First Person" Mentions (The Tag Fix)
-        # This ensures the summary sees "@you" instead of "<@123...>"
+        # This ensures the summary sees "@PSI-09" instead of "<@123...>"
         if config.DISCORD_ID:
             content = re.sub(
-                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@you", content
+                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content
             )
 
         recent.append(f"{sender}: {content}")
 
-    # --- FIX 2: UPDATE PROMPT TO MATCH "@you" LOGIC ---
+    # --- FIX 2: UPDATE PROMPT TO MATCH "@PSI-09" LOGIC ---
     prompt_system = (
-        "you are PSI-09. Analyze this chat history. "
-        "Identify the current topic, who is doing what. "
-        "CRITICAL: Messages marked 'you' are your own past replies. "
-        "Messages containing '@you' are users pinging you directly. "
+        "You are PSI-09 in this context."
+        "You role is of a personality profiler. Analyze this group chat history."
+        "Understand the discussion and the activity and personality of the members."
         "Identify the dynamic of the group and analyse the members convo."
         "Generate a personality background that can be used for hard roasting."
     )
@@ -672,7 +666,7 @@ def get_roast_response(user_message, group_name, sender_name):
             # --- FIX 2: Recognize SELF in the Message Content (The Tag) ---
             # This turns "<@12345>" into "@PSI-09" so the AI knows it was mentioned
             if config.DISCORD_ID:
-                c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@you", c)
+                c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", c)
 
             messages.append({"role": "user", "content": f"{s}: {c}"})
 
@@ -682,7 +676,7 @@ def get_roast_response(user_message, group_name, sender_name):
         content = m.get("content", "")
         if config.DISCORD_ID:
             content = re.sub(
-                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@you", content
+                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content
             )
 
         messages.append({"role": role, "content": content})
@@ -721,7 +715,7 @@ def get_roast_response(user_message, group_name, sender_name):
         "timestamp": datetime.now(UTC).isoformat(),
     }
     group_entry = {
-        "sender": "you",
+        "sender": "PSI-09",
         "content": clean_reply,
         "timestamp": datetime.now(UTC).isoformat(),
     }
@@ -775,7 +769,7 @@ def psi09():
         if config.DISCORD_ID:
             user_message = re.sub(
                 r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">",
-                "@you",
+                "@PSI-09",
                 user_message,
             )
 
