@@ -366,7 +366,7 @@ async def summarize_user_history(bot, user_key, evolve=False):
 
     if old_summary is None and first_msg:
         try:
-            resp = await summary_client.chat.completions.acreate(
+            resp = summary_client.chat.completions.acreate(
                 model=config.MODEL,
                 messages=[
                     {"role": "system", "content": PROMPTS["FIRST_CONTACT"]},
@@ -396,7 +396,7 @@ async def summarize_user_history(bot, user_key, evolve=False):
     )
 
     try:
-        resp = await summary_client.chat.completions.acreate(
+        resp = summary_client.chat.completions.acreate(
             model=config.MODEL,
             messages=[{"role": "system", "content": evolution_prompt}]
             + [{"role": "user", "content": m} for m in recent_msgs],
@@ -440,7 +440,7 @@ async def summarize_group_history(bot, group_name, raw_history):
     ]
 
     try:
-        resp = await summary_client.chat.completions.acreate(
+        resp = summary_client.chat.completions.acreate(
             model=config.MODEL,
             messages=prompt,
             max_tokens=250,
@@ -517,7 +517,7 @@ async def get_roast_response(bot, user_message, group_name, sender_name):
     messages.append({"role": "user", "content": user_message})
 
     try:
-        resp = await text_client.chat.completions.acreate(
+        resp = text_client.chat.completions.acreate(
             model=config.MODEL,
             messages=messages,
             max_tokens=140,
