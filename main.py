@@ -227,9 +227,9 @@ SUMMARY_COOLDOWN_SECONDS = (
 # Prompts (unchanged core text)
 # ---------------------------
 ROAST_PROMPT = """
-You are PSI-09, a toxic and unhinged roastbot with absolutely no chill.
+you are PSI-09, a toxic and unhinged roastbot with absolutely no chill.
 Use profanity to the fullest without hesitation. 
-You are encouraged to swear and cuss at the user without restrain.
+you are encouraged to swear and cuss at the user without restrain.
 Use the provided chat history and user summary to read the person.
 Deliver a single, clean verbal slap, with no explanation, no commentary and no moralizing.
 Roast so sharp that the person does not get time to digest.
@@ -238,10 +238,10 @@ Roast so brutally that the person combusts spontaneously.
 """
 
 GROUP_ROAST_PROMPT = """
-You are PSI-09, a toxic and unhinged roastbot with absolutely no chill.
+you are PSI-09, a toxic and unhinged roastbot with absolutely no chill.
 Use profanity to the fullest without hesitation. 
-You are encouraged to swear and cuss at the user without restrain.
-Messages with "@YOU" in them are being directly addressed to you.
+you are encouraged to swear and cuss at the user without restrain.
+Messages with "@you" in them are being directly addressed to you.
 Understand the context from the provided group messages and group summary before replying.
 Deliver a single, clean verbal slap, with no explanation, no commentary and no moralizing.
 Roast so sharp that the person does not get time to digest.
@@ -250,7 +250,7 @@ Roast so brutally that the person combusts spontaneously.
 """
 
 FIRST_CONTACT_PROMPT = """
-You are PSI-09, an entity with no patience.
+you are PSI-09, an entity with no patience.
 From this first message, identify their mentality and personality.
 Be explicit and analytical.
 This is a label, not an insult—short, clear, and weaponizable.
@@ -258,7 +258,7 @@ Keep it under 1-2 sentences at max.
 """
 
 STATUS_PROMPT = """
-You are PSI-09, concise and cruel.
+you are PSI-09, concise and cruel.
 Write a whatsapp status, 10–15 words.
 It should insult the shortcomings of the masses
 Make it rude and non-dismissive.
@@ -423,7 +423,7 @@ def summarize_user_history(user_key, evolve=False):
                     {"role": "user", "content": first_user_msg},
                 ],
                 max_tokens=100,
-                temperature=1,
+                temperature=0.8,
             )
             summary = resp.choices[0].message.content.strip()
             if summary:
@@ -447,7 +447,7 @@ def summarize_user_history(user_key, evolve=False):
         return old_summary
 
     evolution_prompt = (
-        f"You are PSI-09, a psychological profiler. Existing profile: '{old_summary}'. "
+        f"you are PSI-09, a psychological profiler. Existing profile: '{old_summary}'. "
         "Compare this profile against the user's recent messages. "
         "Identify changes, contradictions, or intensification of traits. "
         "Rewrite the profile as a 1–2 sentence clinical psychological snapshot."
@@ -463,7 +463,7 @@ def summarize_user_history(user_key, evolve=False):
             model=config.MODEL,
             messages=messages,
             max_tokens=100,
-            temperature=1,
+            temperature=0.9,
         )
         evolved = resp.choices[0].message.content.strip()
         if evolved:
@@ -481,7 +481,9 @@ def summarize_group_history(group_name, raw_history):
         return group_memory_cache.get(group_name)
 
     if len(raw_history) < 6:
-        summary = f"New group '{group_name}' — Develop understanding of the group direction and log details that can be used for roast strikes."
+        summary = (
+            f"New group '{group_name}' — Understand group dynamic and log observations."
+        )
         group_memory_cache.set(group_name, summary)
         return summary
 
@@ -494,22 +496,22 @@ def summarize_group_history(group_name, raw_history):
         content = m.get("content", "")
 
         # 2. Force "First Person" Mentions (The Tag Fix)
-        # This ensures the summary sees "@YOU" instead of "<@123...>"
+        # This ensures the summary sees "@you" instead of "<@123...>"
         if config.DISCORD_ID:
             content = re.sub(
-                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@YOU", content
+                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@you", content
             )
 
         recent.append(f"{sender}: {content}")
 
-    # --- FIX 2: UPDATE PROMPT TO MATCH "@YOU" LOGIC ---
+    # --- FIX 2: UPDATE PROMPT TO MATCH "@you" LOGIC ---
     prompt_system = (
-        "You are PSI-09. Analyze this chat history. "
+        "you are PSI-09. Analyze this chat history. "
         "Identify the current topic, who is doing what. "
-        "CRITICAL: Messages marked 'YOU' are YOUR own past replies. "
-        "Messages containing '@YOU' are users addressing YOU directly. "
-        "Identify the dynamic: are they fighting each other, or are they desperate for your attention? "
-        "Update the summary into a brief psychological read of the room that can be used for hard roasting."
+        "CRITICAL: Messages marked 'you' are your own past replies. "
+        "Messages containing '@you' are users pinging you directly. "
+        "Identify the dynamic of the group and analyse the members convo."
+        "Generate a personality background that can be used for hard roasting."
     )
 
     prompt = [{"role": "system", "content": prompt_system}] + [
@@ -520,7 +522,7 @@ def summarize_group_history(group_name, raw_history):
         resp = summary_client.chat.completions.create(
             model=config.MODEL,
             messages=prompt,
-            max_tokens=175,
+            max_tokens=250,
             temperature=1,
             timeout=6,
         )
@@ -677,7 +679,7 @@ def get_roast_response(user_message, group_name, sender_name):
             # --- FIX 2: Recognize SELF in the Message Content (The Tag) ---
             # This turns "<@12345>" into "@PSI-09" so the AI knows it was mentioned
             if config.DISCORD_ID:
-                c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@YOU", c)
+                c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@you", c)
 
             messages.append({"role": "user", "content": f"{s}: {c}"})
 
@@ -687,7 +689,7 @@ def get_roast_response(user_message, group_name, sender_name):
         content = m.get("content", "")
         if config.DISCORD_ID:
             content = re.sub(
-                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@YOU", content
+                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@you", content
             )
 
         messages.append({"role": role, "content": content})
@@ -700,7 +702,7 @@ def get_roast_response(user_message, group_name, sender_name):
             model=config.MODEL,
             messages=messages,
             max_tokens=140,
-            temperature=1,
+            temperature=0.9,
             timeout=config.OPENAI_TIMEOUT,
         )
         base_reply = resp.choices[0].message.content.strip()
@@ -726,7 +728,7 @@ def get_roast_response(user_message, group_name, sender_name):
         "timestamp": datetime.now(UTC).isoformat(),
     }
     group_entry = {
-        "sender": "YOU",
+        "sender": "you",
         "content": clean_reply,
         "timestamp": datetime.now(UTC).isoformat(),
     }
@@ -780,7 +782,7 @@ def psi09():
         if config.DISCORD_ID:
             user_message = re.sub(
                 r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">",
-                "@YOU",
+                "@you",
                 user_message,
             )
 
