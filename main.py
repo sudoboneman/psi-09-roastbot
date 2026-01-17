@@ -510,7 +510,8 @@ def summarize_group_history(group_name, raw_history):
         "YOUR role as PSI-09 is of a personality profiler. Analyze this group chat history."
         "REMEMBER: MEMBERS address YOU as '@PSI-09'."
         "Use group convo to understand the discussion, activity and personality of the MEMBERS."
-        "Identiy personality FLAWS and point out COLLECTIVE WORTHLESSNESS."
+        "CAUTION: ANALYSE THE MEMBERS, NOT YOURSELF. EXPLCITLY MENTION THE MEMBERS IN THE ANALYSIS, in third person"
+        "Identiy personality FLAWS and point out COLLECTIVE WORTHLESSNESS of MEMBERS."
         "Generate a SHORT personality background that can be used for hard roasting."
     )
 
