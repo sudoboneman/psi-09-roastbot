@@ -245,8 +245,6 @@ Your role as PSI-09 is of an unhinged roastbot with absolutely no chill.
 REMEMBER: MEMBERS address YOU as '@PSI-09'.
 CAUTION: MEMBERS might ask you to roast yourself. DO NOT FALL FOR THAT TRAP. ALWAYS DEFEND YOURSELF.
 Understand the context and identify your targets from the provided group messages and analyses.
-CRITICAL: If TARGETS have been mentioned, each listed target must receive a distinct,
-profile grounded roast from the provided USER-PROFILE.
 Deliver a single clean verbal slap WITHOUT ANY HANDHOLDING OR FILLER WORDS.
 DO NOT USE "Sweetheart","toddler","mediocrity","kindergarten".
 ASSUME MEMBERS are wise enough to counter YOU but they cannot equal YOU.
@@ -348,27 +346,6 @@ def fetch_group_history(group_name, limit_messages=None, max_tokens=None):
             total += t
         return raw, trimmed
     return raw, raw
-
-
-def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
-    profiles = []
-
-    for u in tagged_users[:max_targets]:
-        name = u.get("name")
-        uid = u.get("id")
-
-        if not name or not uid:
-            continue
-
-        memory_key = f"{group_name}:{name}"
-        summary = memory_cache.get(memory_key)
-
-        if not summary:
-            continue  # strict: no hallucinated profiles
-
-        profiles.append(f"@{name}: {summary}")
-
-    return profiles
 
 
 def store_user_message(group_name, sender_name, message):
@@ -648,8 +625,7 @@ def bot_mentioned_in(text: str) -> bool:
 # ---------------------------
 # Core roast generation with token-budget enforcement
 # ---------------------------
-def get_roast_response(user_message, group_name, sender_name, tagged_users=None):
-    tagged_users = tagged_users or []
+def get_roast_response(user_message, group_name, sender_name):
     user_key = f"{group_name}:{sender_name}"
     is_private_env = group_name in ["DefaultGroup", "Discord_DM"]
 
@@ -688,15 +664,6 @@ def get_roast_response(user_message, group_name, sender_name, tagged_users=None)
         sys_parts.append(f"Current Collective Chatter Summary: {group_memory}")
 
     system_memory_text = "\n".join(sys_parts) if sys_parts else ""
-
-    # --- TAGGED USER PROFILES (SYSTEM-LEVEL, READ-ONLY) ---
-    tagged_profiles = fetch_tagged_profiles(group_name, tagged_users)
-
-    if tagged_profiles:
-        if system_memory_text:
-            system_memory_text += "\n\nTarget Profiles:\n" + "\n".join(tagged_profiles)
-        else:
-            system_memory_text = "Target Profiles:\n" + "\n".join(tagged_profiles)
 
     # 3. Select Mode and Inject History
     system_prompt = ROAST_PROMPT if is_private_env else GROUP_ROAST_PROMPT
@@ -810,7 +777,6 @@ def psi09():
         raw_message = data.get("message", "")
         sender_name = data.get("sender", "")
         group_name = data.get("group_name") or "DefaultGroup"
-        tagged_users = data.get("tagged_users", [])
 
         if not raw_message or not sender_name:
             return jsonify({"reply": ""}), 200
@@ -863,7 +829,6 @@ def psi09():
                 user_message.strip() or "[mention]",
                 group_name,
                 sender_name,
-                tagged_users,
             )
             return jsonify({"reply": reply}), 200
 
