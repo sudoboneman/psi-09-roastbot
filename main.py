@@ -464,7 +464,7 @@ def summarize_user_history(user_key, evolve=False):
         resp = summary_client.chat.completions.create(
             model=config.MODEL,
             messages=messages,
-            max_tokens=100,
+            max_tokens=500,
             temperature=0.9,
         )
         evolved = resp.choices[0].message.content.strip()
@@ -525,7 +525,7 @@ def summarize_group_history(group_name, raw_history):
         resp = summary_client.chat.completions.create(
             model=config.MODEL,
             messages=prompt,
-            max_tokens=250,
+            max_tokens=500,
             temperature=1,
             timeout=6,
         )
