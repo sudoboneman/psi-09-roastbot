@@ -553,7 +553,7 @@ def summarize_group_history(group_name, raw_history):
         resp = summary_client.chat.completions.create(
             model=config.MODEL,
             messages=prompt,
-            max_tokens=500,
+            max_tokens=1000,
             temperature=1,
             timeout=6,
         )
