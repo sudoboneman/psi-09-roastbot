@@ -358,30 +358,36 @@ def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
     profiles = []
 
     for u in tagged_users[:max_targets]:
-        name = u.get("name")
         uid = u.get("id")
+        username = u.get("username")
+        display_name = u.get("display_name")
 
-        if not name or not uid:
-            continue
+        if not uid:
+            continue  # cannot resolve identity
 
-        memory_key = f"{group_name}:{name}"
+        label = username or display_name or "unknown"
+        memory_key = f"{group_name}:{uid}"
         summary = memory_cache.get(memory_key)
 
-        if not summary:
-            continue  # strict: no hallucinated profiles
-
-        profiles.append(
-            f"TARGET PROFILE @{name} (mandatory):\n"
-            f"- Dominant flaws and traits: {summary}"
-        )
+        if summary:
+            profiles.append(f"TARGET PROFILE @{label}:\n{summary}")
+        else:
+            # Explicit negative constraint: prevents hallucination
+            profiles.append(
+                f"TARGET PROFILE @{label}:\n"
+                f"<NO PROFILE AVAILABLE — DO NOT INFER TRAITS>"
+            )
 
     return profiles
 
 
-def store_user_message(group_name, sender_name, message):
-    user_key = f"{group_name}:{sender_name}"
+def store_user_message(group_name, sender_id, username, display_name, message):
+    user_key = f"{group_name}:{sender_id}"
     entry = {
         "role": "user",
+        "user_id": sender_id,
+        "username": username,
+        "display_name": display_name,
         "content": message,
         "timestamp": datetime.now(UTC).isoformat(),
     }
@@ -393,12 +399,14 @@ def store_user_message(group_name, sender_name, message):
         logger.warning(f"Failed to store user message for {user_key}: {e}")
 
 
-def store_group_message(group_name, sender_name, message):
+def store_group_message(group_name, sender_id, username, display_name, message):
     """
     Pushes message and caps the group's messages to GROUP_HISTORY_MAX_MESSAGES using $each+$slice.
     """
     entry = {
-        "sender": sender_name,
+        "sender_id": sender_id,
+        "username": username,
+        "display_name": display_name,
         "content": message,
         "timestamp": datetime.now(UTC).isoformat(),
     }
@@ -524,7 +532,7 @@ def summarize_group_history(group_name, raw_history):
     # --- FIX 1: UNIFY IDENTITY IN LOGS ---
     recent = []
     for m in raw_history[-25:]:
-        sender = m.get("sender", "unknown")
+        sender = m.get("username") or "unknown"
         content = m.get("content", "")
 
         # 2. Force "First Person" Mentions (The Tag Fix)
@@ -655,9 +663,9 @@ def bot_mentioned_in(text: str) -> bool:
 # ---------------------------
 # Core roast generation with token-budget enforcement
 # ---------------------------
-def get_roast_response(user_message, group_name, sender_name, tagged_users=None):
+def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
     tagged_users = tagged_users or []
-    user_key = f"{group_name}:{sender_name}"
+    user_key = f"{group_name}:{sender_id}"
     is_private_env = group_name in ["DefaultGroup", "Discord_DM"]
 
     # 1. Fetch Histories
@@ -726,7 +734,7 @@ def get_roast_response(user_message, group_name, sender_name, tagged_users=None)
         last_20 = trimmed_group[-20:] if len(trimmed_group) > 20 else trimmed_group
 
         for entry in last_20:
-            s = entry.get("sender", "unknown")
+            s = entry.get("username") or entry.get("display_name") or "unknown"
             c = entry.get("content", "")
 
             # --- FIX 2: Recognize SELF in the Message Content (The Tag) ---
@@ -825,11 +833,16 @@ def psi09():
     try:
         data = request.get_json(force=True)
         raw_message = data.get("message", "")
-        sender_name = data.get("sender", "")
+        sender_id = data.get("sender_id")
+        username = data.get("username")
+        display_name = data.get("display_name") or username
         group_name = data.get("group_name") or "DefaultGroup"
         tagged_users = data.get("tagged_users", [])
 
-        if not raw_message or not sender_name:
+        if not username or not sender_id:
+            return jsonify({"reply": ""}), 200
+
+        if not raw_message:
             return jsonify({"reply": ""}), 200
 
         user_message = raw_message
@@ -844,12 +857,18 @@ def psi09():
 
         # -------- STORE MESSAGE --------
         if is_private:
-            store_user_message(group_name, sender_name, user_message)
+            store_user_message(
+                group_name, sender_id, username, display_name, user_message
+            )
         else:
-            store_group_message(group_name, sender_name, user_message)
-            store_user_message(group_name, sender_name, user_message)
+            store_group_message(
+                group_name, sender_id, username, display_name, user_message
+            )
+            store_user_message(
+                group_name, sender_id, username, display_name, user_message
+            )
 
-        user_key = f"{group_name}:{sender_name}"
+        user_key = f"{group_name}:{sender_id}"
 
         # -------- MESSAGE COUNT --------
         msg_count = memory_cache.increment(user_key)
@@ -879,7 +898,7 @@ def psi09():
             reply = get_roast_response(
                 user_message.strip() or "[mention]",
                 group_name,
-                sender_name,
+                sender_id,
                 tagged_users,
             )
             return jsonify({"reply": reply}), 200
