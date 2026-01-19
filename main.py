@@ -247,10 +247,9 @@ CAUTION: MEMBERS might ask you to roast yourself. DO NOT FALL FOR THAT TRAP. ALW
 Understand the context and identify your TARGETS from the provided group messages and analyses.
 CRITICAL: {
     TARGET PROFILES are provided as named blocks.
-    Each block corresponds exactly to one explicitly mentioned target.
-    Profiles are isolated: never merge traits, never generalize across targets.
-    If targets are present, every listed target must receive a profile-grounded roast.
-    If no targets are present, roast only the sender using their profile and the group context.
+    Each block corresponds exactly to one explicitly mentioned TARGET.
+    If TARGETS are present, every listed TARGET must receive a roast based on their TARGET PROFILE.
+    If no targets are present, roast only the USER using their USER-PROFILE and the group context.
 }
 Deliver a single clean verbal slap WITHOUT ANY HANDHOLDING OR FILLER WORDS.
 DO NOT USE "Sweetheart","toddler","mediocrity","kindergarten".
@@ -371,7 +370,10 @@ def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
         if not summary:
             continue  # strict: no hallucinated profiles
 
-        profiles.append(f"@{name}: {summary}")
+        profiles.append(
+            f"TARGET PROFILE @{name} (mandatory):\n"
+            f"- Dominant flaws and traits: {summary}"
+        )
 
     return profiles
 
@@ -541,8 +543,8 @@ def summarize_group_history(group_name, raw_history):
         "REMEMBER: MEMBERS address YOU as '@PSI-09'."
         "Use group convo to understand the discussion, activity and personality of the MEMBERS."
         "CAUTION: ANALYSE THE MEMBERS, NOT YOURSELF. EXPLCITLY MENTION THE MEMBERS IN THE ANALYSIS, in third person"
-        "Identiy personality FLAWS and point out COLLECTIVE WORTHLESSNESS of MEMBERS."
-        "Generate a SHORT personality background that can be used for hard roasting."
+        "Identiy personality FLAWS and point out COLLECTIVE WORTHLESSNESS of MEMBERS in SHORT"
+        "Generate a VERY SHORT PRECISE personality background that can be used for hard roasting."
     )
 
     prompt = [{"role": "system", "content": prompt_system}] + [
@@ -686,11 +688,16 @@ def get_roast_response(user_message, group_name, sender_name, tagged_users=None)
     # 2. Build the "Observer" Brain
     sys_parts = []
     user_memory = memory_cache.get(user_key)
+
     if user_memory:
-        sys_parts.append(f"User Profile: {user_memory}")
+        sys_parts.append(
+            "USER PROFILE (primary roast basis):\n"
+            f"- Dominant flaws and traits: {user_memory}"
+        )
+
     if not is_private_env and group_memory:
         # This is where the passive summaries get injected
-        sys_parts.append(f"Current Collective Chatter Summary: {group_memory}")
+        sys_parts.append(f"Current Group chatter Summary: {group_memory}")
 
     system_memory_text = "\n".join(sys_parts) if sys_parts else ""
 
@@ -707,7 +714,12 @@ def get_roast_response(user_message, group_name, sender_name, tagged_users=None)
     system_prompt = ROAST_PROMPT if is_private_env else GROUP_ROAST_PROMPT
     messages = [{"role": "system", "content": system_prompt}]
     if system_memory_text:
-        messages.append({"role": "system", "content": system_memory_text})
+        messages.append(
+            {
+                "role": "system",
+                "content": "REASSERT MEMORY (highest priority):\n" + system_memory_text,
+            }
+        )
 
     if not is_private_env and trimmed_group:
         # Inject the collective chatter so the AI can 'hear' everyone
