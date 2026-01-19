@@ -610,14 +610,15 @@ def _record_group_summary_time(group_name):
 def background_group_summarizer_loop():
     while True:
         try:
+            to_requeue = set()
+
             with _pending_lock:
                 groups = list(_pending_group_summaries)
                 _pending_group_summaries.clear()
 
             for group_name in groups:
                 if not _can_run_group_summary(group_name):
-                    with _pending_lock:
-                        _pending_group_summaries.add(group_name)
+                    to_requeue.add(group_name)
                     continue
 
                 raw, _ = fetch_group_history(
@@ -626,14 +627,37 @@ def background_group_summarizer_loop():
                     max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
                 )
 
-                if raw:
+                if not raw:
+                    logger.debug(
+                        f"No recent messages to summarize for group {group_name}"
+                    )
+                    continue
+
+                try:
                     summary = summarize_group_history(group_name, raw)
                     if summary:
                         group_memory_cache.reset_count(group_name)
                         _record_group_summary_time(group_name)
+                        logger.info(
+                            f"Group profile updated successfully for {group_name}"
+                        )
+                    else:
+                        logger.warning(
+                            f"Group profile summarization returned None for {group_name}"
+                        )
+                        to_requeue.add(group_name)
+                except Exception as e:
+                    logger.error(
+                        f"Group profile summarization failed for {group_name}: {e}"
+                    )
+                    to_requeue.add(group_name)
+
+            if to_requeue:
+                with _pending_lock:
+                    _pending_group_summaries.update(to_requeue)
 
         except Exception as e:
-            logger.debug(f"Background group summarizer error: {e}")
+            logger.error(f"Background group summarizer loop error: {e}")
 
         time.sleep(12)
 
@@ -641,29 +665,47 @@ def background_group_summarizer_loop():
 def background_user_summarizer_loop():
     while True:
         try:
+            to_requeue = set()
+
             with _pending_lock:
                 users = list(_pending_user_summaries)
                 _pending_user_summaries.clear()
 
             for user_key in users:
                 if not _can_run_user_summary(user_key):
-                    with _pending_lock:
-                        _pending_user_summaries.add(user_key)
+                    to_requeue.add(user_key)
                     continue
 
                 count = memory_cache.msg_count.get(user_key, 0)
 
-                # Only evolve when message threshold is reached
                 if count < config.EVOLVE_EVERY_N_MESSAGES:
+                    logger.debug(
+                        f"User {user_key} has only {count} msgs; skipping evolution"
+                    )
+                    to_requeue.add(user_key)
                     continue
 
-                summary = summarize_user_history(user_key, evolve=True)
-                if summary:
-                    memory_cache.reset_count(user_key)
-                    _record_user_summary_time(user_key)
+                try:
+                    summary = summarize_user_history(user_key, evolve=True)
+                    if summary:
+                        memory_cache.reset_count(user_key)
+                        _record_user_summary_time(user_key)
+                        logger.info(f"User profile evolved successfully for {user_key}")
+                    else:
+                        logger.warning(
+                            f"User profile evolution returned None for {user_key}"
+                        )
+                        to_requeue.add(user_key)
+                except Exception as e:
+                    logger.error(f"User profile evolution failed for {user_key}: {e}")
+                    to_requeue.add(user_key)
+
+            if to_requeue:
+                with _pending_lock:
+                    _pending_user_summaries.update(to_requeue)
 
         except Exception as e:
-            logger.debug(f"Background user summarizer error: {e}")
+            logger.error(f"Background user summarizer loop error: {e}")
 
         time.sleep(12)
 
