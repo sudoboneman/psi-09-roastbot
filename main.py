@@ -444,19 +444,12 @@ def summarize_user_history(user_key, evolve=False):
 
     # ---------- FIRST CONTACT ----------
     if old_summary is None:
-        first_user_msg = next(
-            (m["content"] for m in raw_history if m.get("role") == "user"),
-            None,
-        )
-        if not first_user_msg:
-            return None
-
         try:
             resp = summary_client.chat.completions.create(
                 model=config.MODEL,
                 messages=[
                     {"role": "system", "content": FIRST_CONTACT_PROMPT},
-                    {"role": "user", "content": first_user_msg},
+                    {"role": "user", "content": raw_history[-1]["content"]},
                 ],
                 max_tokens=100,
                 temperature=0.8,
@@ -483,9 +476,9 @@ def summarize_user_history(user_key, evolve=False):
         return old_summary
 
     evolution_prompt = (
-        f"YOU are PSI-09 in this context."
+        "YOU are PSI-09 in this context."
         "YOUR role as PSI-09 is to create personality profiles of the USER interacting with YOU."
-        "This was the profile that you created previously: '{old_summary}'."
+        f"This was the profile that you created previously: '{old_summary}'."
         "Compare this profile against the USER's recent messages. "
         "REMEMBER: Messages from 'PSI-09' or 'assistant' are YOUR REPLIES, not the USER's."
         "Identify changes, contradictions, or intensification of traits. "
@@ -614,7 +607,7 @@ def _record_group_summary_time(group_name):
     _last_group_summary_time[group_name] = time.time()
 
 
-def background_summarizer_loop():
+def background_group_summarizer_loop():
     while True:
         try:
             with _pending_lock:
@@ -634,18 +627,50 @@ def background_summarizer_loop():
                 )
 
                 if raw:
-                    summarize_group_history(group_name, raw)
-                    group_memory_cache.reset_count(group_name)
-                    _record_group_summary_time(group_name)
+                    summary = summarize_group_history(group_name, raw)
+                    if summary:
+                        group_memory_cache.reset_count(group_name)
+                        _record_group_summary_time(group_name)
 
         except Exception as e:
-            logger.debug(f"Background summarizer error: {e}")
+            logger.debug(f"Background group summarizer error: {e}")
+
+        time.sleep(12)
+
+
+def background_user_summarizer_loop():
+    while True:
+        try:
+            with _pending_lock:
+                users = list(_pending_user_summaries)
+                _pending_user_summaries.clear()
+
+            for user_key in users:
+                if not _can_run_user_summary(user_key):
+                    with _pending_lock:
+                        _pending_user_summaries.add(user_key)
+                    continue
+
+                count = memory_cache.msg_count.get(user_key, 0)
+
+                # Only evolve when message threshold is reached
+                if count < config.EVOLVE_EVERY_N_MESSAGES:
+                    continue
+
+                summary = summarize_user_history(user_key, evolve=True)
+                if summary:
+                    memory_cache.reset_count(user_key)
+                    _record_user_summary_time(user_key)
+
+        except Exception as e:
+            logger.debug(f"Background user summarizer error: {e}")
 
         time.sleep(12)
 
 
 # start background summarizer
-threading.Thread(target=background_summarizer_loop, daemon=True).start()
+threading.Thread(target=background_group_summarizer_loop, daemon=True).start()
+threading.Thread(target=background_user_summarizer_loop, daemon=True).start()
 
 
 # ---------------------------
@@ -869,24 +894,25 @@ def psi09():
             )
 
         user_key = f"{group_name}:{sender_id}"
+        enqueue_user_summary(user_key)  # added for fix 3
 
         # -------- MESSAGE COUNT --------
         msg_count = memory_cache.increment(user_key)
 
         # -------- FIRST CONTACT --------
         if memory_cache.get(user_key) is None:
-            summary = summarize_user_history(user_key)
+            try:
+                summary = summarize_user_history(user_key)
+            except Exception as e:
+                logger.warning(f"First-contact failed for {user_key}: {e}")
+                summary = None
+
             if summary:
                 memory_cache.reset_count(user_key)
                 _record_user_summary_time(user_key)
-
-        # -------- EVOLUTION --------
-        elif msg_count >= config.EVOLVE_EVERY_N_MESSAGES:
-            last = _last_user_summary_time.get(user_key, 0)
-            if time.time() - last >= SUMMARY_COOLDOWN_SECONDS:
-                summarize_user_history(user_key, evolve=True)
-                _record_user_summary_time(user_key)
-                memory_cache.reset_count(user_key)
+            else:
+                # first-contact failed → do not reset cooldown, allow retry later
+                pass
 
         # -------- GROUP MEMORY --------
         if not is_private:
