@@ -224,7 +224,7 @@ SUMMARY_COOLDOWN_SECONDS = (
 )
 
 # ---------------------------
-# Prompts (unchanged core text)
+# Prompts
 # ---------------------------
 ROAST_PROMPT = """
 YOU are PSI-09 in this context.
@@ -522,13 +522,12 @@ def summarize_group_history(group_name, raw_history):
 
     old_summary = group_memory_cache.get(group_name) or ""
 
-    # --- FIX 1: UNIFY IDENTITY IN LOGS ---
     recent = []
     for m in raw_history[-25:]:
         sender = m.get("username") or "unknown"
         content = m.get("content", "")
 
-        # 2. Force "First Person" Mentions (The Tag Fix)
+        # Force "First Person" Mentions (The Tag Fix)
         # This ensures the summary sees "@PSI-09" instead of "<@123...>"
         if config.DISCORD_ID:
             content = re.sub(
@@ -537,7 +536,6 @@ def summarize_group_history(group_name, raw_history):
 
         recent.append(f"{sender}: {content}")
 
-    # --- FIX 2: UPDATE PROMPT TO MATCH "@PSI-09" LOGIC ---
     prompt_system = (
         "YOU are PSI-09 in this context."
         "YOUR role as PSI-09 is of a personality profiler. Analyze this group chat history."
@@ -753,7 +751,7 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
     else:
         raw_group, trimmed_group, group_memory = [], [], ""
 
-    # ---- FIX: remove current turn from history to avoid duplication ----
+    # Remove current turn from history to avoid duplication
     if trimmed_user:
         trimmed_user = trimmed_user[:-1]
 
@@ -804,7 +802,7 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
             s = entry.get("username") or entry.get("display_name") or "unknown"
             c = entry.get("content", "")
 
-            # --- FIX 2: Recognize SELF in the Message Content (The Tag) ---
+            # --- Recognize SELF in the Message Content (The Tag) ---
             # This turns "<@12345>" into "@PSI-09" so the AI knows it was mentioned
             if config.DISCORD_ID:
                 c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", c)
@@ -838,7 +836,7 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
         logger.error(f"AI Error: {e}")
         base_reply = ""
 
-    # 5. DUAL STORAGE FIX & PREFIX CLEANING
+    # 5. PREFIX CLEANING
     # First, strip the "PSI-09:" prefix if the AI included it (case-insensitive)
     temp_reply = re.sub(r"^PSI-09\s*:\s*", "", base_reply or "", flags=re.IGNORECASE)
 
@@ -936,7 +934,7 @@ def psi09():
             )
 
         user_key = f"{group_name}:{sender_id}"
-        enqueue_user_summary(user_key)  # added for fix 3
+        enqueue_user_summary(user_key)
 
         # -------- MESSAGE COUNT --------
         msg_count = memory_cache.increment(user_key)
