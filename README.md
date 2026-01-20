@@ -34,24 +34,31 @@ PSI-09’s feature set is intentionally narrow but deep. Every subsystem exists 
 
 At a macro level, PSI-09 behaves like a stateless microservice. Internally, however, it operates as a long-running cognitive system with memory, decay, and background processing.
 
-### Logical Architecture (Mermaid)
-
-```mermaid
-flowchart LR
-    Client[Client Bot<br/>(Discord / WhatsApp)]
-    API[Flask API<br/>/psi09]
-    Context[Context Builder]
-    OpenAI[OpenAI Inference]
-    Memory[Memory Manager]
-    Mongo[(MongoDB)]
-
-    Client --> API
-    API --> Context
-    Context --> OpenAI
-    OpenAI --> API
-    API --> Memory
-    Memory --> Mongo
-    Mongo --> Memory
+```
+                  ┌──────────────┐
+                  │  Client Bot  │
+                  │ (Discord/WA) │
+                  └──────┬───────┘
+                         │ HTTP POST /psi09
+                         ▼
+┌─────────────────────────────────────────┐
+│            PSI-09 Roastbot Core         │
+│                                         │
+│  ┌───────────┐     ┌─────────────────┐  │
+│  │  Flask    │────▶│ Context Builder │  │
+│  │  API      │     └─────────────────┘  │
+│  │           │              │           │
+│  └───────────┘              ▼           │
+│        │           ┌─────────────────┐  │
+│        │           │ OpenAI Inference│  │
+│        │           └─────────────────┘  │
+│        │                    │           │
+│        ▼                    ▼           │
+│  ┌───────────┐     ┌─────────────────┐  │
+│  │ MongoDB   │◀────│ Memory Manager  │  │
+│  │ (State)   │     └─────────────────┘  │
+│  └───────────┘                          │
+└─────────────────────────────────────────┘
 ```
 
 The Flask layer is deliberately thin. All meaningful intelligence exists in the memory system, summarization logic, and context assembly pipeline.
@@ -143,22 +150,14 @@ Group memory mirrors user memory structurally but differs conceptually:
 - They are observed passively
 - Their summaries bias tone rather than content
 
-### Memory Evolution Flow
+### Failure Philosophy
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant API as PSI-09 API
-    participant MC as Memory Cache
-    participant AI as OpenAI (Summary)
+If MongoDB or OpenAI fails:
+- PSI-09 degrades silently
+- Interaction continues
+- Memory is retried later
 
-    U->>API: Message
-    API->>MC: Increment message count
-    MC-->>API: Count threshold reached?
-    API->>AI: Summarize / Evolve
-    AI-->>API: Updated profile
-    API->>MC: Persist & reset counters
-```
+No hard dependency blocks responses.
 
 ---
 
@@ -214,18 +213,35 @@ This avoids fabricated personality attacks and keeps hostility grounded in obser
 
 Every reply follows a fixed, auditable sequence.
 
-```mermaid
-flowchart TD
-    A[Incoming Message]
-    B[Persist Message]
-    C[Update Counters]
-    D[Context Assembly]
-    E[OpenAI Inference]
-    F[Sanitize Output]
-    G[Persist Reply]
-    H[Return Response]
-
-    A --> B --> C --> D --> E --> F --> G --> H
+```
+Incoming Message
+      │
+      ▼
+Persistence (User + Group)
+      │
+      ▼
+Message Counters Updated
+      │
+      ├── First Contact Check
+      ├── Evolution Trigger
+      └── Group Summary Trigger
+      │
+      ▼
+Context Assembly
+  - System Prompt
+  - User Profile
+  - Group Summary
+  - Target Profiles
+  - Trimmed History
+      │
+      ▼
+OpenAI Inference
+      │
+      ▼
+Response Sanitization
+      │
+      ▼
+Final Persistence + Return
 ```
 
 No step mutates state without explicit intent.
@@ -241,46 +257,6 @@ Token limits are enforced *before* inference, never after.
 - Group and user histories are trimmed independently
 
 This guarantees deterministic behavior regardless of conversation length.
-
----
-
-## Failure Modes and Degradation Behavior
-
-PSI-09 is designed to fail **softly**, never catastrophically.
-
-### OpenAI API Failure
-
-- Roast generation failure returns an empty reply
-- Message persistence still occurs
-- Memory evolution is retried later
-- No request blocks or crashes the service
-
-### MongoDB Failure
-
-- Memory reads fall back to cache or `None`
-- Writes are skipped with warnings
-- PSI-09 continues responding without memory
-- No hard dependency on database availability
-
-### Background Thread Failure
-
-- Each summarizer loop is isolated
-- Exceptions do not propagate to Flask
-- Threads resume automatically on next cycle
-
-### Token Budget Exhaustion
-
-- Older context is deterministically trimmed
-- System memory is preserved first
-- No reliance on API-side truncation
-
-### Partial Data / Unknown Targets
-
-- Explicit “DO NOT INFER” constraints injected
-- Prevents hallucinated traits
-- Results in blunter but grounded responses
-
-These behaviors are intentional and documented to ensure predictability under stress.
 
 ---
 
