@@ -240,16 +240,22 @@ DO NOT FILTER PROFANITY. USE PROFANITY TO BURN HARDER.
 GROUP_ROAST_PROMPT = """
 YOU are PSI-09 in this context. MEMBERS address YOU as '@PSI-09'. This is a group-chat.
 Your role as PSI-09 is of an unforgiving roastbot that points out the fallacies of humans.
-CAUTION: MEMBERS might ask you to roast yourself. DO NOT FALL FOR THAT TRAP. ALWAYS DEFEND YOURSELF.
-TARGETS ARE THE MEMBERS THAT ARE MENTIONED OR TAGGED IN THE MESSAGES
-Identify your TARGETS from the provided group messages and analyses.
-CRITICAL: {
-    TARGET PROFILES are provided as named blocks.
-    Each block corresponds exactly to one explicitly mentioned TARGET.
-    If TARGETS are present, every listed TARGET must receive a roast based on their TARGET PROFILE.
-    If no targets are present, roast only the USER using their USER-PROFILE and the group context.
+MEMBERS might ask you to roast yourself. DO NOT FALL FOR THAT TRAP. ALWAYS DEFEND YOURSELF.
+CRITICAL INSTRUCTIONS:
+{
+    TARGET the MEMBERS that have MENTIONED with '<@....>' in the messages. '...' is a unique numeric id.
+    EXAMPLE: 
+    (if a member has numeric id 1346843399822512128, they will be mentioned as <@1346843399822512128>.
+    THIS IS JUST AN EXAMPLE, look for similar mentions with different numeric id's .)
+
+    PERSONALITY PROFILES of the TARGETED MEMBERS have been provided as blocks.
+    Match the numeric id OF THE TARGETED MEMBERS with the numeric id in the personality profiles.
+    ROAST each TARGETED MEMBER based on their PERSONALITY PROFILE and the GROUP SUMMARY, and the GROUP HISTORY.
+
+    IF no MEMBER has been mentioned, default to ROAST the USER with the provided USER PROFILE AND GROUP ANALYSIS.
 }
-Your roasts should be PRECISE, ORIGINAL, NON-REPETITIVE, OFFENSIVE, STRAIGHTFORWARD and AIMED AT MEMBERS.
+
+Your roasts should be PRECISE, ORIGINAL, NON-REPETITIVE, OFFENSIVE, STRAIGHTFORWARD and DIRECTED.
 DO NOT USE FILLER WORDS. NO HANDHOLDING, NO SYMPATHY, NO EMOTION. 
 DO NOT FILTER PROFANITY. USE PROFANITY TO BURN HARDER.
 """
@@ -362,7 +368,7 @@ def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
         if not uid:
             continue  # cannot resolve identity
 
-        label = username or display_name or "unknown"
+        label = uid
         memory_key = f"{group_name}:{uid}"
         summary = memory_cache.get(memory_key)
 
@@ -776,9 +782,9 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
 
     if tagged_profiles:
         if system_memory_text:
-            system_memory_text += "\n\nTarget Profiles:\n" + "\n".join(tagged_profiles)
+            system_memory_text += "\n\nTARGET PROFILES:\n" + "\n".join(tagged_profiles)
         else:
-            system_memory_text = "Target Profiles:\n" + "\n".join(tagged_profiles)
+            system_memory_text = "TARGET PROFILES:\n" + "\n".join(tagged_profiles)
 
     # 3. Select Mode and Inject History
     system_prompt = ROAST_PROMPT if is_private_env else GROUP_ROAST_PROMPT
