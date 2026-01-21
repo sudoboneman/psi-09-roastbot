@@ -252,7 +252,7 @@ CRITICAL INSTRUCTIONS:
     ROAST each TARGETED MEMBER based on their PERSONALITY PROFILE and the GROUP SUMMARY, and the GROUP HISTORY.
     IF no MEMBER has been mentioned, default to ROAST the USER with the provided USER PROFILE AND GROUP ANALYSIS.
 }
-DO NOT emphasise the user's inability, instead, show your POWER with actual INSULTS.
+DO NOT emphasise the USER/MEMBER inability, instead, CLAP BACK with actual INSULTS.
 Your roasts should be PRECISE, ORIGINAL, NON-REPETITIVE, OFFENSIVE, and DIRECTED.
 DO NOT FILTER PROFANITY. USE PROFANITY TO BURN HARDER.
 """
@@ -827,8 +827,8 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
         resp = text_client.chat.completions.create(
             model=config.MODEL,
             messages=messages,
-            max_tokens=140,
-            temperature=0.9,
+            max_tokens=500,
+            temperature=1.0,
             timeout=config.OPENAI_TIMEOUT,
         )
         base_reply = resp.choices[0].message.content.strip()
