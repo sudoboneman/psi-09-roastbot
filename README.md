@@ -7,6 +7,6 @@ Architecture, behavior, and documentation are intentionally withheld.
 
 Status: active, private development  
 Origin: 2025
-License: internal / non-public
+License: **License:** [Proprietary – All rights reserved](./LICENSE)
 
 Copyright © 2024–2026 sudoboneman. All rights reserved.
