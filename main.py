@@ -30,12 +30,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 UTC = timezone.utc
 
-import logging
-import requests
-import os
-import time
-import threading
-
 # --- Discord Engine Logger ---
 class DiscordHandler(logging.Handler):
     def __init__(self, webhook_url):
@@ -1077,6 +1071,21 @@ threading.Thread(target=stream_hf_logs, daemon=True).start()
 # ---------------------------
 # Run
 # ---------------------------
+
+def notify_discord_startup():
+    discord_engine_url = os.getenv("DISCORD_WEBHOOK_ENGINE")
+    if discord_engine_url:
+        try:
+            requests.post(
+                discord_engine_url, 
+                json={"content": "**[Render Engine]**\n🟢 **PSI-09 NEURAL CORTEX ONLINE**"},
+                timeout=5
+            )
+        except Exception as e:
+            logger.warning(f"Startup notification failed: {e}")
+
+notify_discord_startup()
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     # suppress werkzeug info logs, keep errors
