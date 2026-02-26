@@ -134,7 +134,7 @@ def query_private_brain(messages, temperature=0.7, max_tokens=500):
             config.HF_ENDPOINT, 
             json=payload, 
             headers=headers, 
-            timeout=20 # Give the CPU a bit more time to think
+            timeout=180 # Give the CPU a bit more time to think
         )
         response.raise_for_status()
         
