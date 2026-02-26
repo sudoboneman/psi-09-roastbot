@@ -410,8 +410,8 @@ def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
 
     for u in tagged_users[:max_targets]:
         uid = u.get("id")
-        username = u.get("username")
-        display_name = u.get("display_name")
+        # Grabbing the username helps the AI construct more natural insults
+        username = u.get("username") or "Unknown"
 
         if not uid:
             continue  # cannot resolve identity
@@ -420,12 +420,13 @@ def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
         memory_key = f"{group_name}:{uid}"
         summary = memory_cache.get(memory_key)
 
+        # Llama-optimized Markdown formatting with exact tag matching
         if summary:
-            profiles.append(f"TARGET PROFILE @{label}:\n{summary}")
+            profiles.append(f"### TARGET PROFILE: <@{label}> (Username: {username})\n{summary}")
         else:
             # Explicit negative constraint: prevents hallucination
             profiles.append(
-                f"TARGET PROFILE @{label}:\n"
+                f"### TARGET PROFILE: <@{label}> (Username: {username})\n"
                 f"<NO PROFILE AVAILABLE — DO NOT INFER TRAITS>"
             )
 
