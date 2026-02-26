@@ -1,3 +1,12 @@
+---
+title: PSI-09 Engine
+emoji: 💀
+colorFrom: gray
+colorTo: red
+sdk: docker
+app_port: 7860
+---
+
 # PSI-09 ANALYSIS ENGINE
 
 Core service for an experimental conversational system.
