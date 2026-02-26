@@ -30,27 +30,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 UTC = timezone.utc
 
-# --- Discord Engine Logger ---
-class DiscordHandler(logging.Handler):
-    def __init__(self, webhook_url):
-        super().__init__()
-        self.webhook_url = webhook_url
-
-    def emit(self, record):
-        log_entry = self.format(record)
-        try:
-            # We truncate to 1900 to stay under Discord's 2000 char limit
-            requests.post(self.webhook_url, json={"content": f"**[Render Engine]**\n```text\n{log_entry[:1900]}\n```"})
-        except Exception:
-            pass
-
-discord_engine_url = os.getenv("DISCORD_WEBHOOK_ENGINE")
-if discord_engine_url:
-    discord_handler = DiscordHandler(discord_engine_url)
-    # Only send WARNING and ERROR so it doesn't spam every normal request
-    discord_handler.setLevel(logging.WARNING) 
-    logger.addHandler(discord_handler)
-
 # ---------------------------
 # Config
 # ---------------------------
@@ -1024,53 +1003,9 @@ def mongo_keepalive():
 
 threading.Thread(target=mongo_keepalive, daemon=True).start()
 
-def stream_hf_logs():
-    hf_webhook_url = os.getenv("DISCORD_WEBHOOK_HF")
-    hf_token = config.HF_TOKEN
-    
-    if not hf_webhook_url or not hf_token:
-        return
-
-    # UPDATED URL: Note the lowercase and 'live' endpoint
-    url = "https://huggingface.co/api/spaces/sudoboneman/PSI-TEST/logs/run"
-    headers = {"Authorization": f"Bearer {hf_token}"}
-    
-    while True:
-        try:
-            # Use a longer timeout for the stream
-            with requests.get(url, headers=headers, stream=True, timeout=300) as resp:
-                for line in resp.iter_lines():
-                    if line:
-                        decoded = line.decode('utf-8').replace('data:', '').strip()
-                        if not decoded: continue
-                        
-                        # Send immediately for debugging until you know it works
-                        requests.post(hf_webhook_url, json={"content": f"**[HF Brain]**\n```{decoded[:1900]}```"})
-                        
-        except Exception as e:
-            logger.error(f"HF Streamer Error: {e}")
-            time.sleep(10)
-
-# Start the thread
-threading.Thread(target=stream_hf_logs, daemon=True).start()
-
 # ---------------------------
 # Run
 # ---------------------------
-
-def notify_discord_startup():
-    discord_engine_url = os.getenv("DISCORD_WEBHOOK_ENGINE")
-    if discord_engine_url:
-        try:
-            requests.post(
-                discord_engine_url, 
-                json={"content": "**[Render Engine]**\n🟢 **PSI-09 NEURAL CORTEX ONLINE**"},
-                timeout=5
-            )
-        except Exception as e:
-            logger.warning(f"Startup notification failed: {e}")
-
-notify_discord_startup()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
