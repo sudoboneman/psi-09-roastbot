@@ -60,7 +60,7 @@ class Config:
     # We replace OpenAI keys with HF settings
     HF_TOKEN: str = os.getenv("HF_TOKEN") 
     HF_ENDPOINT: str = "https://sudoboneman-psi-test.hf.space/api/chat" # Using the chat endpoint for history support
-    MODEL: str = "dolphin-llama3:8b" # Your private model
+    MODEL: str = "sam860/dolphin3-llama3.2:3b" # Your private model
     
     # Keeping your existing memory settings
     MAX_HISTORY_TOKENS: int = 1200
