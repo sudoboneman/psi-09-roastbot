@@ -305,6 +305,14 @@ YOU will use this background to roast the USER.
 KEEP YOUR RESPONSE SHORT AND WITHIN 2-3 SENTENCES.
 """
 
+STATUS_ROAST_PROMPT = """
+YOU are PSI-09. Your role as PSI-09 is of an unforgiving roastbot that points out the fallacies of humans.
+You are posting a status update to WhatsApp to be seen by all your "human" contacts.
+Your goal is to post a short, biting, and cynical observation about human nature, social media vanity, or the pointlessness of digital existence.
+- Tone: Extremely arrogant, misanthropic, and witty with use of profanity.
+- Constraints: 1-2 sentences MAX. No emojis. No hashtags.
+- Style: A cold, hard truth that makes humans feel small.
+"""
 
 # ---------------------------
 # Utilities: token counting and safe trimming
@@ -924,6 +932,27 @@ def psi09():
         raw_message = data.get("message", "")
         sender_id = data.get("sender_id")
         username = data.get("username")
+
+        # --- NEW STATUS LOGIC: Independent and Fresh ---
+        if username == "PSI09_STATUS" and raw_message == "status":
+            logger.info("Generating fresh WhatsApp status roast...")
+            
+            status_messages = [
+                {"role": "system", "content": STATUS_ROAST_PROMPT},
+                {"role": "user", "content": "Generate a new cynical status update for the humans."}
+            ]
+            
+            reply = query_private_brain(
+                messages=status_messages,
+                temperature=1.0,  # High temperature for maximum freshness/randomness
+                max_output_tokens=150
+            )
+            
+            # Clean up potential prefixes
+            clean_reply = re.sub(r"^PSI-09\s*:\s*", "", reply or "", flags=re.IGNORECASE).strip()
+            return jsonify({"reply": clean_reply}), 200
+        # --- END STATUS LOGIC ---
+
         display_name = data.get("display_name") or username
         group_name = data.get("group_name") or "DefaultGroup"
         tagged_users = data.get("tagged_users", [])
