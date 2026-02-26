@@ -1033,7 +1033,7 @@ def stream_hf_logs():
         return
 
     # UPDATED URL: Note the lowercase and 'live' endpoint
-    url = "https://huggingface.co/api/spaces/sudoboneman/PSI-TEST/logs"
+    url = "https://huggingface.co/api/spaces/sudoboneman/PSI-TEST/logs/run"
     headers = {"Authorization": f"Bearer {hf_token}"}
     
     while True:
