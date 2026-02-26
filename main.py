@@ -80,7 +80,7 @@ group_memory_col = db["group_memory"]
 # ---------------------------
 # Private Brain Connector
 # ---------------------------
-def query_private_brain(messages, temperature, max_tokens):
+def query_private_brain(messages, temperature, max_output_tokens):
     """
     Sends the chat history to the private Hugging Face Space running Llama 3.2.
     """
@@ -95,7 +95,7 @@ def query_private_brain(messages, temperature, max_tokens):
         "stream": False, # Keep it simple for now
         "options": {
             "temperature": temperature,
-            "num_predict": max_tokens, # Ollama uses 'num_predict' instead of 'max_tokens'
+            "num_predict": max_output_tokens, # Ollama uses 'num_predict' instead of 'max_tokens'
             "top_k": 40,
             "top_p": 0.9
         }
@@ -266,6 +266,8 @@ Use the provided chat history and personality-profile to read the USER.
 Your roasts should be PRECISE, ORIGINAL, NON-REPETITIVE and OFFENSIVE
 DO NOT USE FILLER WORDS. NO HANDHOLDING, NO SYMPATHY, NO EMOTION.
 DO NOT FILTER PROFANITY. USE PROFANITY TO BURN HARDER.
+
+KEEP YOUR RESPONSE SHORT AND WITHIN 2-3 SENTENCES.
 """
 
 GROUP_ROAST_PROMPT = """
@@ -286,6 +288,8 @@ CRITICAL INSTRUCTIONS:
 DO NOT emphasise the USER/MEMBER inability, instead, CLAP BACK with actual INSULTS.
 Your roasts should be PRECISE, ORIGINAL, NON-REPETITIVE, OFFENSIVE, and DIRECTED.
 DO NOT FILTER PROFANITY. USE PROFANITY TO BURN HARDER.
+
+KEEP YOUR RESPNSE SHORT
 """
 
 FIRST_CONTACT_PROMPT = """
@@ -295,9 +299,10 @@ YOUR role as PSI-09 is a personality profiler of the USER that you are interacti
 From this first message, get a first impression of USER'S mentality and personality.
 REMEMBER: Messages from 'PSI-09' or 'assistant' are YOUR REPLIES.
 IDENTIFY flaws and CRITICISE USER's character and demeanour.
-KEEP the USER-analysis SHORT, BRIEF and PRECISE.
 CAUTION: ANALYSE THE USER, NOT YOURSELF. EXPLCITLY MENTION THE USER IN THE ANALYSIS, in third person"
 YOU will use this background to roast the USER.
+
+KEEP YOUR RESPONSE SHORT AND WITHIN 2-3 SENTENCES.
 """
 
 
@@ -334,7 +339,7 @@ def trim_messages_to_token_budget(messages, max_tokens):
 # ---------------------------
 # History utilities (with capped group storage)
 # ---------------------------
-def fetch_history(user_key, limit_messages=None, max_tokens=None):
+def fetch_history(user_key, limit_messages=None, max_input_tokens=None):
     limit_messages = limit_messages or config.MAX_HISTORY_MESSAGES
     try:
         doc = history_col.find_one(
@@ -349,14 +354,14 @@ def fetch_history(user_key, limit_messages=None, max_tokens=None):
 
     raw = doc["messages"]
 
-    if max_tokens:
-        trimmed = trim_messages_to_token_budget(raw, max_tokens)
+    if max_input_tokens:
+        trimmed = trim_messages_to_token_budget(raw, max_input_tokens)
         return raw, trimmed
 
     return raw, raw
 
 
-def fetch_group_history(group_name, limit_messages=None, max_tokens=None):
+def fetch_group_history(group_name, limit_messages=None, max_input_tokens=None):
     limit_messages = limit_messages or config.GROUP_HISTORY_SLICE
     try:
         doc = group_history_col.find_one(
@@ -370,14 +375,14 @@ def fetch_group_history(group_name, limit_messages=None, max_tokens=None):
         return [], []
 
     raw = doc["messages"]
-    if max_tokens:
+    if max_input_tokens:
         # map to "sender: content" strings for token counting but return original dicts trimmed
         trimmed = []
         total = 0
         for m in reversed(raw):
             txt = f"{m.get('sender','')}: {m.get('content','')}"
             t = tokens_of(txt)
-            if total + t > max_tokens:
+            if total + t > max_input_tokens:
                 break
             trimmed.insert(0, m)
             total += t
@@ -482,7 +487,7 @@ def summarize_user_history(user_key, evolve=False):
                 {"role": "system", "content": FIRST_CONTACT_PROMPT},
                 {"role": "user", "content": raw_history[-1]["content"]},
             ]
-            summary = query_private_brain(prompt_messages, temperature=0.6, max_tokens=150)
+            summary = query_private_brain(prompt_messages, temperature=0.6, max_output_tokens=250)
                 
             if summary:
                 memory_cache.set(user_key, summary)
@@ -514,6 +519,8 @@ def summarize_user_history(user_key, evolve=False):
         "CAUTION: ANALYSE THE USER, NOT YOURSELF. EXPLCITLY MENTION THE USER IN THE ANALYSIS, in third person"
         "Update the profile to match the user's current personality."
         "YOU will be later using this profile to roast the USER."
+
+        "KEEP YOUR RESPONSE SHORT AND WITHIN 2-3 SENTENCES."
     )
 
     messages = [{"role": "system", "content": evolution_prompt}]
@@ -522,7 +529,7 @@ def summarize_user_history(user_key, evolve=False):
 
     try:
         # Replaced OpenAI call
-        evolved = query_private_brain(messages, temperature=0.7, max_tokens=150)
+        evolved = query_private_brain(messages, temperature=0.7, max_output_tokens=250)
         
         if evolved:
             memory_cache.set(user_key, evolved)
@@ -568,7 +575,9 @@ def summarize_group_history(group_name, raw_history):
         "Use group convo to understand the discussion, activity and personality of the MEMBERS."
         "CAUTION: ANALYSE THE MEMBERS, NOT YOURSELF. EXPLCITLY MENTION THE MEMBERS IN THE ANALYSIS, in third person"
         "Identiy personality FLAWS and point out COLLECTIVE WORTHLESSNESS of MEMBERS in SHORT"
-        "Generate a VERY SHORT PRECISE personality background that can be used for hard roasting."
+        "Generate a PRECISE personality background that can be used for hard roasting."
+
+        "KEEP YOUR RESPONSE SHORT."
     )
 
     prompt = [{"role": "system", "content": prompt_system}] + [
@@ -577,7 +586,7 @@ def summarize_group_history(group_name, raw_history):
 
     try:
         # Replaced OpenAI call
-        new_summary = query_private_brain(prompt, temperature=0.8, max_tokens=200)
+        new_summary = query_private_brain(prompt, temperature=0.8, max_output_tokens=400)
     except Exception as e:
         logger.warning(f"Group summarization failed for {group_name}: {e}")
         new_summary = old_summary
@@ -641,7 +650,7 @@ def background_group_summarizer_loop():
                 raw, _ = fetch_group_history(
                     group_name,
                     limit_messages=config.GROUP_HISTORY_SLICE,
-                    max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
+                    max_input_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
                 )
 
                 if not raw:
@@ -756,7 +765,7 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
     raw_user, trimmed_user = fetch_history(
         user_key,
         limit_messages=config.MAX_HISTORY_MESSAGES,
-        max_tokens=config.MAX_HISTORY_TOKENS,
+        max_input_tokens=config.MAX_HISTORY_TOKENS,
     )
 
     if not is_private_env:
@@ -764,7 +773,7 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
         raw_group, trimmed_group = fetch_group_history(
             group_name,
             limit_messages=config.GROUP_HISTORY_SLICE,
-            max_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
+            max_input_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
         )
         group_memory = group_memory_cache.get(group_name)
     else:
@@ -845,7 +854,7 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
         base_reply = query_private_brain(
             messages=messages,
             temperature=0.9, # Higher creativity for roasts
-            max_tokens=120
+            max_output_tokens=500
         )
     except Exception as e:
         logger.error(f"AI Error: {e}")
