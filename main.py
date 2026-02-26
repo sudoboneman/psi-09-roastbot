@@ -541,7 +541,7 @@ def summarize_user_history(user_key, evolve=False):
 
     try:
         # Replaced OpenAI call
-        evolved = query_private_brain(messages, temperature=0.7, max_tokens=400)
+        evolved = query_private_brain(messages, temperature=0.7, max_tokens=150)
         
         if evolved:
             memory_cache.set(user_key, evolved)
@@ -596,7 +596,7 @@ def summarize_group_history(group_name, raw_history):
 
     try:
         # Replaced OpenAI call
-        new_summary = query_private_brain(prompt, temperature=0.8, max_tokens=600)
+        new_summary = query_private_brain(prompt, temperature=0.8, max_tokens=200)
     except Exception as e:
         logger.warning(f"Group summarization failed for {group_name}: {e}")
         new_summary = old_summary
@@ -864,7 +864,7 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
         base_reply = query_private_brain(
             messages=messages,
             temperature=0.9, # Higher creativity for roasts
-            max_tokens=400
+            max_tokens=120
         )
     except Exception as e:
         logger.error(f"AI Error: {e}")
