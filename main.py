@@ -38,7 +38,7 @@ class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     # We replace OpenAI keys with HF settings
     HF_TOKEN: str = os.getenv("HF_TOKEN") 
-    HF_ENDPOINT: str = "https://sudoboneman-psi-09-llm.hf.space/api/chat" # Using the chat endpoint for history support
+    HF_ENDPOINT: str = os.getenv("HF_ENDPOINT") # Using the chat endpoint for history support
     MODEL: str = "hf.co/bartowski/Llama-3.2-3B-Instruct-Uncensored-GGUF:Q8_0" # Your private model
     
     # Keeping your existing memory settings
