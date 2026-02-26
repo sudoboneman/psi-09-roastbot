@@ -121,8 +121,6 @@ def query_private_brain(messages, temperature=0.7, max_tokens=500):
 
 app = Flask(__name__)
 CORS(app)
-text_client = OpenAI(api_key=config.OPENAI_TEXT_API_KEY)
-summary_client = OpenAI(api_key=config.OPENAI_SUMMARY_API_KEY)
 
 # ---------------------------
 # Token encoding (tiktoken)
