@@ -1083,3 +1083,14 @@ if __name__ == "__main__":
     log = logging.getLogger("werkzeug")
     log.setLevel(logging.ERROR)
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    discord_engine_url = os.getenv("DISCORD_WEBHOOK_ENGINE")
+    if discord_engine_url:
+        try:
+            requests.post(
+                discord_engine_url, 
+                json={"content": "**[Render Engine]**\n🟢 **PSI-09 DEPLOYED AND ONLINE.**"}
+            )
+        except Exception:
+            pass
+
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
