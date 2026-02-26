@@ -2,17 +2,16 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-from openai import OpenAI
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 import os
 import tiktoken
-import random
 import re
 import threading
 import time
 import logging
 import sys
+import requests
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from dataclasses import dataclass
@@ -31,32 +30,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 UTC = timezone.utc
 
-
 # ---------------------------
 # Config
 # ---------------------------
 @dataclass
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
-    OPENAI_TEXT_API_KEY: str = os.getenv("OPENAI_TEXT_API_KEY")
-    OPENAI_SUMMARY_API_KEY: str = os.getenv("OPENAI_SUMMARY_API_KEY")
-    MODEL: str = "gpt-4o-mini"
-    MAX_HISTORY_TOKENS: int = 1200  # total token budget (history + small system memory)
-    MAX_SYSTEM_TOKENS: int = 350  # reserve for system memory (prompts + memories)
+    # We replace OpenAI keys with HF settings
+    HF_TOKEN: str = os.getenv("HF_TOKEN") 
+    HF_ENDPOINT: str = "https://sudoboneman-psi-test.hf.space/api/chat" # Using the chat endpoint for history support
+    MODEL: str = "llama3.2:3b" # Your private model
+    
+    # Keeping your existing memory settings
+    MAX_HISTORY_TOKENS: int = 1200
+    MAX_SYSTEM_TOKENS: int = 350
     MAX_HISTORY_MESSAGES: int = 30
     BOT_NUMBER: str = os.getenv("BOT_NUMBER")
     DISCORD_ID: str = os.getenv("DISCORD_ID")
     MEMORY_TTL: int = 300
     EVOLVE_EVERY_N_MESSAGES: int = 20
     GROUP_SUMMARY_EVERY_N: int = 25
-    OPENAI_RETRIES: int = 3
-    OPENAI_TIMEOUT: int = 8
     GROUP_HISTORY_SLICE: int = 80
     GROUP_HISTORY_TOKEN_LIMIT: int = 800
-    GROUP_HISTORY_MAX_MESSAGES: int = (
-        2000  # keep last N messages per group to avoid unbounded growth
-    )
-
+    GROUP_HISTORY_MAX_MESSAGES: int = 2000
 
 config = Config()
 
@@ -83,8 +79,46 @@ group_history_col = db["group_history"]
 group_memory_col = db["group_memory"]
 
 # ---------------------------
-# Flask & OpenAI client
+# Private Brain Connector
 # ---------------------------
+def query_private_brain(messages, temperature=0.7, max_tokens=500):
+    """
+    Sends the chat history to the private Hugging Face Space running Llama 3.2.
+    """
+    headers = {
+        "Authorization": f"Bearer {config.HF_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": config.MODEL,
+        "messages": messages,
+        "stream": False, # Keep it simple for now
+        "options": {
+            "temperature": temperature,
+            "num_predict": max_tokens, # Ollama uses 'num_predict' instead of 'max_tokens'
+            "top_k": 40,
+            "top_p": 0.9
+        }
+    }
+
+    try:
+        response = requests.post(
+            config.HF_ENDPOINT, 
+            json=payload, 
+            headers=headers, 
+            timeout=20 # Give the CPU a bit more time to think
+        )
+        response.raise_for_status()
+        
+        # Ollama returns the response in 'message.content' inside the JSON
+        result = response.json()
+        return result.get("message", {}).get("content", "").strip()
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Brain Connection Error: {e}")
+        return None
+
 app = Flask(__name__)
 CORS(app)
 text_client = OpenAI(api_key=config.OPENAI_TEXT_API_KEY)
@@ -445,16 +479,13 @@ def summarize_user_history(user_key, evolve=False):
     # ---------- FIRST CONTACT ----------
     if old_summary is None:
         try:
-            resp = summary_client.chat.completions.create(
-                model=config.MODEL,
-                messages=[
-                    {"role": "system", "content": FIRST_CONTACT_PROMPT},
-                    {"role": "user", "content": raw_history[-1]["content"]},
-                ],
-                max_tokens=100,
-                temperature=0.8,
-            )
-            summary = resp.choices[0].message.content.strip()
+            # Replaced OpenAI call
+            prompt_messages = [
+                {"role": "system", "content": FIRST_CONTACT_PROMPT},
+                {"role": "user", "content": raw_history[-1]["content"]},
+            ]
+            summary = query_private_brain(prompt_messages, temperature=0.6, max_tokens=150)
+                
             if summary:
                 memory_cache.set(user_key, summary)
                 logger.info(f"First-contact profile created for {user_key}")
@@ -492,13 +523,9 @@ def summarize_user_history(user_key, evolve=False):
         messages.append({"role": "user", "content": msg})
 
     try:
-        resp = summary_client.chat.completions.create(
-            model=config.MODEL,
-            messages=messages,
-            max_tokens=500,
-            temperature=0.9,
-        )
-        evolved = resp.choices[0].message.content.strip()
+        # Replaced OpenAI call
+        evolved = query_private_brain(messages, temperature=0.7, max_tokens=400)
+        
         if evolved:
             memory_cache.set(user_key, evolved)
             logger.info(f"Profile evolved for {user_key}")
@@ -551,14 +578,8 @@ def summarize_group_history(group_name, raw_history):
     ]
 
     try:
-        resp = summary_client.chat.completions.create(
-            model=config.MODEL,
-            messages=prompt,
-            max_tokens=1000,
-            temperature=1,
-            timeout=6,
-        )
-        new_summary = resp.choices[0].message.content.strip()
+        # Replaced OpenAI call
+        new_summary = query_private_brain(prompt, temperature=0.8, max_tokens=600)
     except Exception as e:
         logger.warning(f"Group summarization failed for {group_name}: {e}")
         new_summary = old_summary
@@ -822,16 +843,12 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
 
     messages.append({"role": "user", "content": user_message})
 
-    # 4. Generate Response
     try:
-        resp = text_client.chat.completions.create(
-            model=config.MODEL,
+        base_reply = query_private_brain(
             messages=messages,
-            max_tokens=500,
-            temperature=1.0,
-            timeout=config.OPENAI_TIMEOUT,
+            temperature=0.9, # Higher creativity for roasts
+            max_tokens=400
         )
-        base_reply = resp.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"AI Error: {e}")
         base_reply = ""
