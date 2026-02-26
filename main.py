@@ -30,6 +30,33 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 UTC = timezone.utc
 
+import logging
+import requests
+import os
+import time
+import threading
+
+# --- Discord Engine Logger ---
+class DiscordHandler(logging.Handler):
+    def __init__(self, webhook_url):
+        super().__init__()
+        self.webhook_url = webhook_url
+
+    def emit(self, record):
+        log_entry = self.format(record)
+        try:
+            # We truncate to 1900 to stay under Discord's 2000 char limit
+            requests.post(self.webhook_url, json={"content": f"**[Render Engine]**\n```text\n{log_entry[:1900]}\n```"})
+        except Exception:
+            pass
+
+discord_engine_url = os.getenv("DISCORD_WEBHOOK_ENGINE")
+if discord_engine_url:
+    discord_handler = DiscordHandler(discord_engine_url)
+    # Only send WARNING and ERROR so it doesn't spam every normal request
+    discord_handler.setLevel(logging.WARNING) 
+    logger.addHandler(discord_handler)
+
 # ---------------------------
 # Config
 # ---------------------------
@@ -1002,8 +1029,50 @@ def mongo_keepalive():
             logger.warning(f"Mongo keepalive failed: {e}")
         time.sleep(180)
 
-
 threading.Thread(target=mongo_keepalive, daemon=True).start()
+
+# --- Hugging Face Log Streamer ---
+def stream_hf_logs():
+    hf_webhook_url = os.getenv("DISCORD_WEBHOOK_HF")
+    hf_token = config.HF_TOKEN
+    
+    if not hf_webhook_url or not hf_token:
+        logger.warning("Missing HF webhook or token. Skipping HF stream.")
+        return
+
+    url = "https://huggingface.co/api/spaces/sudoboneman/PSI-TEST/logs/run"
+    headers = {"Authorization": f"Bearer {hf_token}"}
+    log_buffer = []
+    last_send = time.time()
+    
+    while True:
+        try:
+            with requests.get(url, headers=headers, stream=True, timeout=60) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if line:
+                        decoded = line.decode('utf-8')
+                        if decoded.startswith("data:"):
+                            text = decoded[5:].strip()
+                            # Filter out UptimeRobot/FastCron pings
+                            if text and "GET /" not in text and "HEAD /" not in text:
+                                log_buffer.append(text)
+                    
+                    # Group logs every 5 seconds or 15 lines
+                    now = time.time()
+                    if log_buffer and (now - last_send > 5 or len(log_buffer) >= 15):
+                        chunk = "\n".join(log_buffer)[:1900]
+                        requests.post(hf_webhook_url, json={"content": f"**[HF Brain]**\n```text\n{chunk}\n```"})
+                        log_buffer = []
+                        last_send = now
+        except requests.exceptions.ChunkedEncodingError:
+            pass # Normal SSE reset
+        except Exception as e:
+            logger.error(f"HF Streamer Error: {e}") # This will also trigger the Engine Logger!
+            time.sleep(10)
+
+# Start the thread
+threading.Thread(target=stream_hf_logs, daemon=True).start()
 
 # ---------------------------
 # Run
