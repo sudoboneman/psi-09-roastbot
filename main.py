@@ -42,6 +42,7 @@ class Config:
     MODEL: str = "hf.co/bartowski/Llama-3.2-3B-Instruct-Uncensored-GGUF:Q8_0" # Your private model
     
     # Keeping your existing memory settings
+    MAX_HISTORY_TOKENS: int = 1500
     MAX_HISTORY_MESSAGES: int = 30
     BOT_NUMBER: str = os.getenv("BOT_NUMBER")
     DISCORD_ID: str = os.getenv("DISCORD_ID")
