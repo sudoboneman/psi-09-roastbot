@@ -1025,44 +1025,31 @@ def mongo_keepalive():
 
 threading.Thread(target=mongo_keepalive, daemon=True).start()
 
-# --- Hugging Face Log Streamer ---
 def stream_hf_logs():
     hf_webhook_url = os.getenv("DISCORD_WEBHOOK_HF")
     hf_token = config.HF_TOKEN
     
     if not hf_webhook_url or not hf_token:
-        logger.warning("Missing HF webhook or token. Skipping HF stream.")
         return
 
-    url = "https://huggingface.co/api/spaces/sudoboneman/PSI-TEST/logs/run"
+    # UPDATED URL: Note the lowercase and 'live' endpoint
+    url = "https://huggingface.co/api/spaces/sudoboneman/psi-test/logs"
     headers = {"Authorization": f"Bearer {hf_token}"}
-    log_buffer = []
-    last_send = time.time()
     
     while True:
         try:
-            with requests.get(url, headers=headers, stream=True, timeout=60) as resp:
-                resp.raise_for_status()
+            # Use a longer timeout for the stream
+            with requests.get(url, headers=headers, stream=True, timeout=300) as resp:
                 for line in resp.iter_lines():
                     if line:
-                        decoded = line.decode('utf-8')
-                        if decoded.startswith("data:"):
-                            text = decoded[5:].strip()
-                            # Filter out UptimeRobot/FastCron pings
-                            if text and "GET /" not in text and "HEAD /" not in text:
-                                log_buffer.append(text)
-                    
-                    # Group logs every 5 seconds or 15 lines
-                    now = time.time()
-                    if log_buffer and (now - last_send > 5 or len(log_buffer) >= 15):
-                        chunk = "\n".join(log_buffer)[:1900]
-                        requests.post(hf_webhook_url, json={"content": f"**[HF Brain]**\n```text\n{chunk}\n```"})
-                        log_buffer = []
-                        last_send = now
-        except requests.exceptions.ChunkedEncodingError:
-            pass # Normal SSE reset
+                        decoded = line.decode('utf-8').replace('data:', '').strip()
+                        if not decoded: continue
+                        
+                        # Send immediately for debugging until you know it works
+                        requests.post(hf_webhook_url, json={"content": f"**[HF Brain]**\n```{decoded[:1900]}```"})
+                        
         except Exception as e:
-            logger.error(f"HF Streamer Error: {e}") # This will also trigger the Engine Logger!
+            logger.error(f"HF Streamer Error: {e}")
             time.sleep(10)
 
 # Start the thread
