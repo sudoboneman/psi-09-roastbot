@@ -1008,8 +1008,10 @@ threading.Thread(target=mongo_keepalive, daemon=True).start()
 # ---------------------------
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    # suppress werkzeug info logs, keep errors
+    # Fallback to 7860 if PORT is not set
+    port = int(os.getenv("PORT", 7860)) 
+    
     log = logging.getLogger("werkzeug")
     log.setLevel(logging.ERROR)
+    
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
