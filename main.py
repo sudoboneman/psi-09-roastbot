@@ -63,8 +63,6 @@ class Config:
     MODEL: str = "hf.co/bartowski/Llama-3.2-3B-Instruct-Uncensored-GGUF:Q8_0" # Your private model
     
     # Keeping your existing memory settings
-    MAX_HISTORY_TOKENS: int = 1200
-    MAX_SYSTEM_TOKENS: int = 350
     MAX_HISTORY_MESSAGES: int = 30
     BOT_NUMBER: str = os.getenv("BOT_NUMBER")
     DISCORD_ID: str = os.getenv("DISCORD_ID")
@@ -102,7 +100,7 @@ group_memory_col = db["group_memory"]
 # ---------------------------
 # Private Brain Connector
 # ---------------------------
-def query_private_brain(messages, temperature=0.7, max_tokens=500):
+def query_private_brain(messages, temperature, max_tokens):
     """
     Sends the chat history to the private Hugging Face Space running Llama 3.2.
     """
