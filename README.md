@@ -1,6 +1,5 @@
 ---
-title: PSI-09 Engine
-emoji: 💀
+title: PSI-09-main
 colorFrom: gray
 colorTo: red
 sdk: docker
