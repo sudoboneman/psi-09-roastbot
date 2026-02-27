@@ -112,7 +112,6 @@ def query_private_brain(messages, temperature, max_output_tokens):
 
     # --- DETAILED LOGGING: REQUEST ---
     start_time = time.time()
-    logger.info("\n" + "%" * 50)
     logger.info(f"REQUEST | temp: {temperature} | max_tokens: {max_output_tokens}")
     logger.info(f"LLM Payload:\n{json.dumps(messages, indent=2)}")
 
@@ -133,13 +132,11 @@ def query_private_brain(messages, temperature, max_output_tokens):
         elapsed = time.time() - start_time
         logger.info(f"RESPONSE | Time: {elapsed:.2f}s")
         logger.info(f"Output: {reply_text}")
-        logger.info("%" * 50 + "\n")
         
         return reply_text
         
     except requests.exceptions.RequestException as e:
         logger.error(f"CORTEX CONNECTION ERROR: {e}")
-        logger.error("%" * 50 + "\n")
         return None
 
 app = Flask(__name__)
