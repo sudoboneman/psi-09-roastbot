@@ -361,28 +361,19 @@ def fetch_group_history(group_name, limit_messages=None, max_input_tokens=None):
 
 def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
     profiles = []
-
     for u in tagged_users[:max_targets]:
         uid = u.get("id")
-        # Grabbing the username helps the AI construct more natural insults
         username = u.get("username") or "Unknown"
 
         if not uid:
-            continue  # cannot resolve identity
+            continue  
 
-        label = uid
         memory_key = f"{group_name}:{uid}"
         summary = memory_cache.get(memory_key)
 
-        # Llama-optimized Markdown formatting with exact tag matching
+        # ONLY append if the profile actually exists in the database
         if summary:
-            profiles.append(f"### TARGET PROFILE: <@{label}> (Username: {username})\n{summary}")
-        else:
-            # Explicit negative constraint: prevents hallucination
-            profiles.append(
-                f"### TARGET PROFILE: <@{label}> (Username: {username})\n"
-                f"<NO PROFILE AVAILABLE — DO NOT INFER TRAITS>"
-            )
+            profiles.append(f"### TARGET PROFILE: <@{uid}> (Username: {username})\n{summary}")
 
     return profiles
 
@@ -456,7 +447,7 @@ def summarize_user_history(user_key, evolve=False):
                 {"role": "system", "content": FIRST_CONTACT_PROMPT},
                 {"role": "user", "content": raw_history[-1]["content"]},
             ]
-            summary = query_private_brain(prompt_messages, temperature=0.6, max_output_tokens=250)
+            summary = query_private_brain(prompt_messages, temperature=0.6, max_output_tokens=200)
                 
             if summary:
                 memory_cache.set(user_key, summary)
@@ -486,7 +477,7 @@ def summarize_user_history(user_key, evolve=False):
 
     try:
         # Replaced OpenAI call
-        evolved = query_private_brain(messages, temperature=0.7, max_output_tokens=250)
+        evolved = query_private_brain(messages, temperature=0.7, max_output_tokens=200)
         
         if evolved:
             memory_cache.set(user_key, evolved)
@@ -531,7 +522,7 @@ def summarize_group_history(group_name, raw_history):
 
     try:
         # Replaced OpenAI call
-        new_summary = query_private_brain(prompt, temperature=0.8, max_output_tokens=400)
+        new_summary = query_private_brain(prompt, temperature=0.8, max_output_tokens=200)
     except Exception as e:
         logger.warning(f"Group summarization failed for {group_name}: {e}")
         new_summary = old_summary
@@ -730,30 +721,23 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
     if not is_private_env and trimmed_group:
         trimmed_group = trimmed_group[:-1]
 
+    # Build the "Observer" Brain
     sys_parts = []
     user_memory = memory_cache.get(user_key)
 
     if user_memory:
-        sys_parts.append(
-            "### TARGET PROFILE (Primary Subject)\n"
-            f"{user_memory}"
-        )
+        sys_parts.append(f"### TARGET PROFILE (Primary Subject)\n{user_memory}")
 
     if not is_private_env and group_memory:
         sys_parts.append(f"### GROUP DYNAMIC SUMMARY\n{group_memory}")
 
+    tagged_profiles = fetch_tagged_profiles(group_name, tagged_users)
+    if tagged_profiles:
+        sys_parts.append("### BYSTANDER PROFILES (Tagged Users)\n" + "\n".join(tagged_profiles))
+
     system_memory_text = "\n\n".join(sys_parts) if sys_parts else ""
 
-    # --- TAGGED USER PROFILES (SYSTEM-LEVEL, READ-ONLY) ---
-    tagged_profiles = fetch_tagged_profiles(group_name, tagged_users)
-
-    if tagged_profiles:
-        if system_memory_text:
-            system_memory_text += "\n\n### BYSTANDER PROFILES (Tagged Users)\n" + "\n".join(tagged_profiles)
-        else:
-            system_memory_text = "### BYSTANDER PROFILES (Tagged Users)\n" + "\n".join(tagged_profiles)
-
-
+    # Select Mode and Inject History
     system_prompt = ROAST_PROMPT if is_private_env else GROUP_ROAST_PROMPT
     messages = [{"role": "system", "content": system_prompt}]
     
@@ -765,35 +749,48 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
             }
         )
 
-    # Bundle group chatter into ONE system log instead of individual user messages
+    # Bundle group chatter ONLY if it exists and isn't empty
     if not is_private_env and trimmed_group:
         last_20 = trimmed_group[-20:] if len(trimmed_group) > 20 else trimmed_group
         
-        group_chat_log = "### RECENT GROUP CHATTER (Observer Log)\n"
+        chat_lines = []
         for entry in last_20:
             s = entry.get("username") or entry.get("display_name") or "unknown"
             c = entry.get("content", "")
             if config.DISCORD_ID:
                 c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", c)
-            group_chat_log += f"[{s}]: {c}\n"
             
-        messages.append({"role": "system", "content": group_chat_log})
+            # Only append if the message isn't empty
+            if c.strip():
+                chat_lines.append(f"[{s}]: {c}")
+                
+        if chat_lines:
+            messages.append({
+                "role": "system", 
+                "content": "### RECENT GROUP CHATTER (Observer Log)\n" + "\n".join(chat_lines)
+            })
 
-    # Direct conversation history with the target
+    # Direct conversation history ONLY if it exists
     if trimmed_user:
-        messages.append({"role": "system", "content": "### PREVIOUS DIRECT CONVERSATION"})
+        valid_user_msgs = []
         for m in trimmed_user:
             role = m.get("role", "user")
             content = m.get("content", "")
             if config.DISCORD_ID:
-                content = re.sub(
-                    r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content
-                )
-            messages.append({"role": role, "content": content})
+                content = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content)
+            
+            # Only append if not empty
+            if content.strip():
+                valid_user_msgs.append({"role": role, "content": content})
+                
+        if valid_user_msgs:
+            messages.append({"role": "system", "content": "### PREVIOUS DIRECT CONVERSATION"})
+            messages.extend(valid_user_msgs)
 
     # The Final Trigger
-    messages.append({"role": "system", "content": "### CURRENT TRIGGER MESSAGE (Respond to this)"})
-    messages.append({"role": "user", "content": user_message})
+    if user_message.strip():
+        messages.append({"role": "system", "content": "### CURRENT TRIGGER MESSAGE (Respond to this)"})
+        messages.append({"role": "user", "content": user_message})
 
     # --- START OF LOGGING BLOCK ---
     logger.info("FINAL PAYLOAD GOING TO LLM:")
@@ -804,7 +801,7 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
         base_reply = query_private_brain(
             messages=messages,
             temperature=0.9, 
-            max_output_tokens=500
+            max_output_tokens=200
         )
     except Exception as e:
         logger.error(f"AI Error: {e}")
