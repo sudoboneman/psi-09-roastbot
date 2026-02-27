@@ -6,8 +6,6 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python3 main.py
     envVars:
-      - key: OPENAI_API_KEY
-        fromDatabase: true
       - key: OTHER_ENV_VAR
         fromDatabase: true
     autoDeploy: true
