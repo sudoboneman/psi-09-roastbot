@@ -144,7 +144,6 @@ try:
 except Exception:
     ENCODING = tiktoken.get_encoding("cl100k_base")
 
-
 # ---------------------------
 # Memory caches and pending sets
 # ---------------------------
@@ -736,12 +735,7 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
     messages = [{"role": "system", "content": system_prompt}]
     
     if system_memory_text:
-        messages.append(
-            {
-                "role": "system",
-                "content": "--- CONTEXT & MEMORIES ---\n" + system_memory_text + "\n--------------------------",
-            }
-        )
+        messages.append({"role": "system", "content": system_memory_text})
 
     # Bundle group chatter ONLY if it exists and isn't empty
     if not is_private_env and trimmed_group:
@@ -761,7 +755,7 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
         if chat_lines:
             messages.append({
                 "role": "system", 
-                "content": "### RECENT GROUP CHATTER (Observer Log)\n" + "\n".join(chat_lines)
+                "content": "### RECENT GROUP CHATTER \n" + "\n".join(chat_lines)
             })
 
     # Direct conversation history ONLY if it exists
