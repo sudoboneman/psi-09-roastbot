@@ -48,7 +48,7 @@ class Config:
     # We replace OpenAI keys with HF settings
     HF_TOKEN: str = os.getenv("HF_TOKEN") 
     HF_ENDPOINT: str = os.getenv("HF_ENDPOINT") # Using the chat endpoint for history support
-    MODEL: str = "nchapman/dolphin3.0-llama3:3b" # Your private model
+    MODEL: str = "bartowski/Dolphin3.0-Llama3.2-3B-GGUF:Q8_0" # Your private model
     
     # Keeping your existing memory settings
     MAX_HISTORY_TOKENS: int = 1500
