@@ -706,7 +706,6 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
     user_key = f"{group_name}:{sender_id}"
     is_private_env = group_name in ["DefaultGroup", "Discord_DM"]
 
-    # 1. Fetch Histories
     raw_user, trimmed_user = fetch_history(
         user_key,
         limit_messages=config.MAX_HISTORY_MESSAGES,
@@ -731,81 +730,86 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
     if not is_private_env and trimmed_group:
         trimmed_group = trimmed_group[:-1]
 
-    # 2. Build the "Observer" Brain
     sys_parts = []
     user_memory = memory_cache.get(user_key)
 
     if user_memory:
         sys_parts.append(
-            "USER PROFILE (primary roast basis):\n"
-            f"- Dominant flaws and traits: {user_memory}"
+            "### TARGET PROFILE (Primary Subject)\n"
+            f"{user_memory}"
         )
 
     if not is_private_env and group_memory:
-        # This is where the passive summaries get injected
-        sys_parts.append(f"Current Group chatter Summary: {group_memory}")
+        sys_parts.append(f"### GROUP DYNAMIC SUMMARY\n{group_memory}")
 
-    system_memory_text = "\n".join(sys_parts) if sys_parts else ""
+    system_memory_text = "\n\n".join(sys_parts) if sys_parts else ""
 
     # --- TAGGED USER PROFILES (SYSTEM-LEVEL, READ-ONLY) ---
     tagged_profiles = fetch_tagged_profiles(group_name, tagged_users)
 
     if tagged_profiles:
         if system_memory_text:
-            system_memory_text += "\n\nTARGET PROFILES:\n" + "\n".join(tagged_profiles)
+            system_memory_text += "\n\n### BYSTANDER PROFILES (Tagged Users)\n" + "\n".join(tagged_profiles)
         else:
-            system_memory_text = "TARGET PROFILES:\n" + "\n".join(tagged_profiles)
+            system_memory_text = "### BYSTANDER PROFILES (Tagged Users)\n" + "\n".join(tagged_profiles)
 
-    # 3. Select Mode and Inject History
+
     system_prompt = ROAST_PROMPT if is_private_env else GROUP_ROAST_PROMPT
     messages = [{"role": "system", "content": system_prompt}]
+    
     if system_memory_text:
         messages.append(
             {
                 "role": "system",
-                "content": "REASSERT MEMORY (highest priority):\n" + system_memory_text,
+                "content": "--- CONTEXT & MEMORIES ---\n" + system_memory_text + "\n--------------------------",
             }
         )
 
+    # Bundle group chatter into ONE system log instead of individual user messages
     if not is_private_env and trimmed_group:
-        # Inject the collective chatter so the AI can 'hear' everyone
         last_20 = trimmed_group[-20:] if len(trimmed_group) > 20 else trimmed_group
-
+        
+        group_chat_log = "### RECENT GROUP CHATTER (Observer Log)\n"
         for entry in last_20:
             s = entry.get("username") or entry.get("display_name") or "unknown"
             c = entry.get("content", "")
-
-            # --- Recognize SELF in the Message Content (The Tag) ---
-            # This turns "<@12345>" into "@PSI-09" so the AI knows it was mentioned
             if config.DISCORD_ID:
                 c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", c)
+            group_chat_log += f"[{s}]: {c}\n"
+            
+        messages.append({"role": "system", "content": group_chat_log})
 
-            messages.append({"role": "user", "content": f"{s}: {c}"})
+    # Direct conversation history with the target
+    if trimmed_user:
+        messages.append({"role": "system", "content": "### PREVIOUS DIRECT CONVERSATION"})
+        for m in trimmed_user:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            if config.DISCORD_ID:
+                content = re.sub(
+                    r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content
+                )
+            messages.append({"role": role, "content": content})
 
-    for m in trimmed_user:
-        # Do the same cleanup for user history just in case
-        role = m.get("role", "user")
-        content = m.get("content", "")
-        if config.DISCORD_ID:
-            content = re.sub(
-                r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content
-            )
-
-        messages.append({"role": role, "content": content})
-
+    # The Final Trigger
+    messages.append({"role": "system", "content": "### CURRENT TRIGGER MESSAGE (Respond to this)"})
     messages.append({"role": "user", "content": user_message})
+
+    # --- START OF LOGGING BLOCK ---
+    logger.info("FINAL PAYLOAD GOING TO LLM:")
+    logger.info(json.dumps(messages, indent=2))
+    # --- END OF LOGGING BLOCK ---
 
     try:
         base_reply = query_private_brain(
             messages=messages,
-            temperature=0.9, # Higher creativity for roasts
+            temperature=0.9, 
             max_output_tokens=500
         )
     except Exception as e:
         logger.error(f"AI Error: {e}")
         base_reply = ""
 
-    # 5. PREFIX CLEANING
     # First, strip the "PSI-09:" prefix if the AI included it (case-insensitive)
     temp_reply = re.sub(r"^PSI-09\s*:\s*", "", base_reply or "", flags=re.IGNORECASE)
 
