@@ -6,6 +6,7 @@ from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 import os
 import tiktoken
+import json
 import re
 import threading
 import time
@@ -109,6 +110,14 @@ def query_private_brain(messages, temperature, max_output_tokens):
         }
     }
 
+    # --- DETAILED LOGGING: REQUEST ---
+    start_time = time.time()
+    logger.info("\n" + "="*50)
+    logger.info(f"REQUEST | Temp: {temperature} | MaxTokens: {max_output_tokens}")
+    logger.info("="*50)
+    logger.info(f"Payload:\n{json.dumps(messages, indent=2)}")
+    logger.info("-" * 50)
+
     try:
         response = requests.post(
             config.HF_ENDPOINT, 
@@ -120,10 +129,22 @@ def query_private_brain(messages, temperature, max_output_tokens):
         
         # Ollama returns the response in 'message.content' inside the JSON
         result = response.json()
-        return result.get("message", {}).get("content", "").strip()
+        reply_text = result.get("message", {}).get("content", "").strip()
+
+        # --- DETAILED LOGGING: RESPONSE ---
+        elapsed = time.time() - start_time
+        logger.info("\n" + "="*50)
+        logger.info(f"RESPONSE | Time: {elapsed:.2f}s")
+        logger.info("="*50)
+        logger.info(f"Output:\n{reply_text}")
+        logger.info("="*50 + "\n")
+        
+        return reply_text
         
     except requests.exceptions.RequestException as e:
-        logger.error(f"Brain Connection Error: {e}")
+        logger.error("\n" + "="*50)
+        logger.error(f"CORTEX CONNECTION ERROR: {e}")
+        logger.error("="*50 + "\n")
         return None
 
 app = Flask(__name__)
@@ -781,6 +802,9 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
         messages.append({"role": role, "content": content})
 
     messages.append({"role": "user", "content": user_message})
+
+    logger.info("FINAL LLM PAYLOAD:")
+    logger.info(json.dumps(messages, indent=2))
 
     try:
         base_reply = query_private_brain(
