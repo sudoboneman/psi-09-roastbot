@@ -1,4 +1,12 @@
-# PSI-09 ANALYSIS ENGINE
+---
+title: PSI-09-main
+colorFrom: red
+colorTo: green
+sdk: docker
+app_port: 7860
+---
+
+# PSI-09 CONVERSATION AND ANALYSIS ENGINE
 
 Core service for an experimental conversational system.
 
