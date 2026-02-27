@@ -110,9 +110,6 @@ def query_private_brain(messages, temperature, max_output_tokens):
         }
     }
 
-    # --- DETAILED LOGGING: REQUEST ---
-    start_time = time.time()
-    logger.info(f"REQUEST | temp: {temperature} | max_tokens: {max_output_tokens}")
     logger.info(f"LLM Payload:\n{json.dumps(messages, indent=2)}")
 
     try:
@@ -128,9 +125,6 @@ def query_private_brain(messages, temperature, max_output_tokens):
         result = response.json()
         reply_text = result.get("message", {}).get("content", "").strip()
 
-        # --- DETAILED LOGGING: RESPONSE ---
-        elapsed = time.time() - start_time
-        logger.info(f"RESPONSE | Time: {elapsed:.2f}s")
         logger.info(f"Output: {reply_text}")
         
         return reply_text
@@ -789,13 +783,8 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
 
     # The Final Trigger
     if user_message.strip():
-        messages.append({"role": "system", "content": "### CURRENT TRIGGER MESSAGE (Respond to this)"})
+        messages.append({"role": "system", "content": "### CURRENT USER MESSAGE"})
         messages.append({"role": "user", "content": user_message})
-
-    # --- START OF LOGGING BLOCK ---
-    logger.info("FINAL PAYLOAD GOING TO LLM:")
-    logger.info(json.dumps(messages, indent=2))
-    # --- END OF LOGGING BLOCK ---
 
     try:
         base_reply = query_private_brain(
