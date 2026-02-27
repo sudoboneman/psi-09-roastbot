@@ -440,7 +440,7 @@ def summarize_user_history(user_key, evolve=False):
                 {"role": "system", "content": FIRST_CONTACT_PROMPT},
                 {"role": "user", "content": raw_history[-1]["content"]},
             ]
-            summary = query_private_brain(prompt_messages, temperature=0.6, max_output_tokens=200)
+            summary = query_private_brain(prompt_messages, temperature=0.9, max_output_tokens=200)
                 
             if summary:
                 memory_cache.set(user_key, summary)
@@ -727,16 +727,14 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
     
     final_system_content = system_prompt
     if system_memory_text:
-        final_system_content += "\n\n--- CONTEXT & MEMORIES ---\n" + system_memory_text
+        # Changed from "--- CONTEXT & MEMORIES ---" to prevent hallucinated closing tags
+        final_system_content += "\n\nDATABASE INJECT:\n" + system_memory_text
 
     messages = [{"role": "system", "content": final_system_content}]
 
     # ==========================================
     # 2. Build the Native ChatML History Feed
     # ==========================================
-    # We DO NOT pop the last message. It's already in the DB, so it will naturally 
-    # act as the final 'user' trigger for the LLM to respond to.
-    
     if is_private_env:
         # Private Chat: Natively pass user/assistant turns
         if trimmed_user:
@@ -765,8 +763,8 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
                     # Map bot's past messages natively to the 'assistant' role
                     messages.append({"role": "assistant", "content": c})
                 else:
-                    # Map human messages to 'user' role, but inject their name
-                    messages.append({"role": "user", "content": f"[{s}]: {c}"})
+                    # Break the script pattern by using natural conversational framing
+                    messages.append({"role": "user", "content": f"Message from {s}:\n{c}"})
 
     # ==========================================
     # 3. Call the Brain
@@ -781,10 +779,15 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
         logger.error(f"AI Error: {e}")
         base_reply = ""
 
-    # Clean up prefixes or hallucinated continuation brackets
-    temp_reply = re.sub(r"^PSI-09\s*:\s*", "", base_reply or "", flags=re.IGNORECASE)
-    temp_reply = re.sub(r"\[.*?\]:.*", "", temp_reply, flags=re.DOTALL) 
-    clean_reply = re.sub(r"\s{3,}", " ", temp_reply).strip()
+    # Strip hallucinated speaker tags strictly from the START of the reply
+    temp_reply = re.sub(r"^(?:PSI-09|<.*?>|\[.*?\])\s*:\s*", "", base_reply or "", flags=re.IGNORECASE)
+    
+    # Strip hallucinated system footers if they still happen
+    temp_reply = temp_reply.replace("--- END OF CONTEXT & MEMORIES ---", "")
+    temp_reply = temp_reply.replace("--- END OF CONTEXT ---", "")
+    
+    # Clean up whitespace safely
+    clean_reply = re.sub(r"\s{2,}", " ", temp_reply).strip()
 
     if not clean_reply:
         logger.info(f"Empty or failed response for {user_key}. Skipping storage.")
