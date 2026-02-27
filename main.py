@@ -803,8 +803,10 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
 
     messages.append({"role": "user", "content": user_message})
 
+    logger.info("\n" + "=" * 25)
     logger.info("FINAL LLM PAYLOAD:")
     logger.info(json.dumps(messages, indent=2))
+    logger.info("=" * 25 + "\n")
 
     try:
         base_reply = query_private_brain(
