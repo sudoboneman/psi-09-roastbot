@@ -681,15 +681,15 @@ def bot_mentioned_in(text: str) -> bool:
     discord_pattern = r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">"
     return re.search(discord_pattern, text) is not None
 
-
 # ---------------------------
-# Core roast generation with token-budget enforcement
+# Core roast generation with unified ChatML enforcement
 # ---------------------------
 def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
     tagged_users = tagged_users or []
     user_key = f"{group_name}:{sender_id}"
     is_private_env = group_name in ["DefaultGroup", "Discord_DM"]
 
+    # Fetch history
     raw_user, trimmed_user = fetch_history(
         user_key,
         limit_messages=config.MAX_HISTORY_MESSAGES,
@@ -697,7 +697,6 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
     )
 
     if not is_private_env:
-        # Fetch the collective chatter history and group observer memory
         raw_group, trimmed_group = fetch_group_history(
             group_name,
             limit_messages=config.GROUP_HISTORY_SLICE,
@@ -707,19 +706,14 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
     else:
         raw_group, trimmed_group, group_memory = [], [], ""
 
-    # Remove current turn from history to avoid duplication
-    if trimmed_user:
-        trimmed_user = trimmed_user[:-1]
-
-    if not is_private_env and trimmed_group:
-        trimmed_group = trimmed_group[:-1]
-
-    # Build the "Observer" Brain
+    # ==========================================
+    # 1. Build ONE Clean System Identity Block
+    # ==========================================
     sys_parts = []
     user_memory = memory_cache.get(user_key)
 
     if user_memory:
-        sys_parts.append(f"### TARGET PROFILE (Primary Subject)\n{user_memory}")
+        sys_parts.append(f"### TARGET PROFILE (Primary Subject: {sender_id})\n{user_memory}")
 
     if not is_private_env and group_memory:
         sys_parts.append(f"### GROUP DYNAMIC SUMMARY\n{group_memory}")
@@ -729,57 +723,54 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
         sys_parts.append("### BYSTANDER PROFILES (Tagged Users)\n" + "\n".join(tagged_profiles))
 
     system_memory_text = "\n\n".join(sys_parts) if sys_parts else ""
-
-    # Select Mode and Inject History
     system_prompt = ROAST_PROMPT if is_private_env else GROUP_ROAST_PROMPT
-    messages = [{"role": "system", "content": system_prompt}]
     
+    final_system_content = system_prompt
     if system_memory_text:
-        messages.append({"role": "system", "content": system_memory_text})
+        final_system_content += "\n\n--- CONTEXT & MEMORIES ---\n" + system_memory_text
 
-    # Bundle group chatter ONLY if it exists and isn't empty
-    if not is_private_env and trimmed_group:
-        last_20 = trimmed_group[-20:] if len(trimmed_group) > 20 else trimmed_group
-        
-        chat_lines = []
-        for entry in last_20:
-            s = entry.get("username") or entry.get("display_name") or "unknown"
-            c = entry.get("content", "")
-            if config.DISCORD_ID:
-                c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", c)
-            
-            # Only append if the message isn't empty
-            if c.strip():
-                chat_lines.append(f"[{s}]: {c}")
+    messages = [{"role": "system", "content": final_system_content}]
+
+    # ==========================================
+    # 2. Build the Native ChatML History Feed
+    # ==========================================
+    # We DO NOT pop the last message. It's already in the DB, so it will naturally 
+    # act as the final 'user' trigger for the LLM to respond to.
+    
+    if is_private_env:
+        # Private Chat: Natively pass user/assistant turns
+        if trimmed_user:
+            for m in trimmed_user:
+                role = m.get("role", "user")
+                content = m.get("content", "").strip()
+                if config.DISCORD_ID:
+                    content = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content)
+                if content:
+                    messages.append({"role": role, "content": content})
+    else:
+        # Group Chat: Map everything into a clean user/assistant timeline
+        if trimmed_group:
+            last_20 = trimmed_group[-20:] if len(trimmed_group) > 20 else trimmed_group
+            for entry in last_20:
+                s = entry.get("sender") or entry.get("username") or entry.get("display_name") or "unknown"
+                c = entry.get("content", "").strip()
                 
-        if chat_lines:
-            messages.append({
-                "role": "system", 
-                "content": "### RECENT GROUP CHATTER \n" + "\n".join(chat_lines)
-            })
+                if config.DISCORD_ID:
+                    c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", c)
 
-    # Direct conversation history ONLY if it exists
-    if trimmed_user:
-        valid_user_msgs = []
-        for m in trimmed_user:
-            role = m.get("role", "user")
-            content = m.get("content", "")
-            if config.DISCORD_ID:
-                content = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content)
-            
-            # Only append if not empty
-            if content.strip():
-                valid_user_msgs.append({"role": role, "content": content})
-                
-        if valid_user_msgs:
-            messages.append({"role": "system", "content": "### PREVIOUS DIRECT CONVERSATION"})
-            messages.extend(valid_user_msgs)
+                if not c:
+                    continue
 
-    # The Final Trigger
-    if user_message.strip():
-        messages.append({"role": "system", "content": "### CURRENT USER MESSAGE"})
-        messages.append({"role": "user", "content": user_message})
+                if s == "PSI-09":
+                    # Map bot's past messages natively to the 'assistant' role
+                    messages.append({"role": "assistant", "content": c})
+                else:
+                    # Map human messages to 'user' role, but inject their name
+                    messages.append({"role": "user", "content": f"[{s}]: {c}"})
 
+    # ==========================================
+    # 3. Call the Brain
+    # ==========================================
     try:
         base_reply = query_private_brain(
             messages=messages,
@@ -790,17 +781,18 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
         logger.error(f"AI Error: {e}")
         base_reply = ""
 
-    # First, strip the "PSI-09:" prefix if the AI included it (case-insensitive)
+    # Clean up prefixes or hallucinated continuation brackets
     temp_reply = re.sub(r"^PSI-09\s*:\s*", "", base_reply or "", flags=re.IGNORECASE)
-
-    # Then clean up extra whitespace
+    temp_reply = re.sub(r"\[.*?\]:.*", "", temp_reply, flags=re.DOTALL) 
     clean_reply = re.sub(r"\s{3,}", " ", temp_reply).strip()
 
     if not clean_reply:
         logger.info(f"Empty or failed response for {user_key}. Skipping storage.")
         return ""
 
-    # Create entries for both DBs
+    # ==========================================
+    # 4. Store the Reply
+    # ==========================================
     user_entry = {
         "role": "assistant",
         "content": clean_reply,
@@ -813,30 +805,17 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
     }
 
     try:
-        # Always save to chat_history for the user's specific thread
-        history_col.update_one(
-            {"_id": user_key}, {"$push": {"messages": user_entry}}, upsert=True
-        )
-
-        # If in a server, also save to group_history so the 'collective' knows the bot replied
+        history_col.update_one({"_id": user_key}, {"$push": {"messages": user_entry}}, upsert=True)
         if not is_private_env:
             group_history_col.update_one(
                 {"_id": group_name},
-                {
-                    "$push": {
-                        "messages": {
-                            "$each": [group_entry],
-                            "$slice": -config.GROUP_HISTORY_MAX_MESSAGES,
-                        }
-                    }
-                },
+                {"$push": {"messages": {"$each": [group_entry], "$slice": -config.GROUP_HISTORY_MAX_MESSAGES}}},
                 upsert=True,
             )
     except Exception as e:
         logger.warning(f"Reply storage failed: {e}")
 
     return clean_reply
-
 
 # ---------------------------
 # Flask routes
