@@ -873,6 +873,10 @@ def psi09():
         sender_id = data.get("sender_id")
         username = data.get("username")
 
+        if username and "WEBHOOK" in username.upper():
+            logger.warning(f"Blocked malicious webhook loop injection from {username}")
+            return jsonify({"reply": ""}), 200
+        
         # --- NEW STATUS LOGIC: Independent and Fresh ---
         if username == "PSI09_STATUS" and raw_message == "status":
             logger.info("Generating fresh WhatsApp status roast...")
