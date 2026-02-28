@@ -45,7 +45,9 @@ UTC = timezone.utc
 @dataclass
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
-    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY")
+    HF_TOKEN: str = os.getenv("HF_TOKEN") 
+    HF_ENDPOINT: str = os.getenv("HF_ENDPOINT") 
+    MODEL: str = "dolphin3" 
     DISCORD_ID: str = os.getenv("DISCORD_ID")
     
     # Keeping your existing memory settings
@@ -83,47 +85,47 @@ group_history_col = db["group_history"]
 group_memory_col = db["group_memory"]
 
 # ---------------------------
-# Brain Connector (OpenRouter FREE API)
+# Brain Connector (Hugging Face / Ollama Private API)
 # ---------------------------
 def query_private_brain(messages, temperature, max_output_tokens):
     """
-    Sends the complex chat history to OpenRouter using official syntax.
+    Sends the complex chat history to your private Hugging Face Space.
     """
-    if not config.OPENROUTER_API_KEY:
-        logger.error("Missing OPENROUTER_API_KEY! Add it to your Space Secrets.")
+    if not config.HF_ENDPOINT:
+        logger.error("Missing HF_ENDPOINT! Add it to your Space Secrets.")
         return None
 
     headers = {
-        "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
-        "HTTP-Referer": "https://psi-09.engine", 
-        "X-OpenRouter-Title": "PSI-09",
         "Content-Type": "application/json"
     }
     
+    # Only attach auth if a token is provided (in case you use an ungated local endpoint)
+    if config.HF_TOKEN:
+        headers["Authorization"] = f"Bearer {config.HF_TOKEN}"
+    
     payload = {
-        # Using Llama 3.1 8B Free to avoid severe 429 capacity errors from Venice
-        "model": "mgryphe/mythomax-l2-13b:free", 
+        "model": config.MODEL, 
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_output_tokens,
         "top_p": 0.9
     }
 
-    logger.info("Sending payload to OpenRouter...")
+    logger.info("Sending payload to Hugging Face Private Brain...")
 
     try:
         response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions", 
+            config.HF_ENDPOINT, 
+            json=payload, 
             headers=headers, 
-            data=json.dumps(payload),
-            timeout=60
+            timeout=480 # Higher timeout for 3B model inference speed
         )
         response.raise_for_status()
         
         result = response.json()
         reply_text = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 
-        logger.info(f"OpenRouter Output: {reply_text}")
+        logger.info(f"HF Output: {reply_text}")
         return reply_text
         
     except requests.exceptions.RequestException as e:
@@ -308,6 +310,7 @@ def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
         memory_key = f"{group_name}:{uid}"
         summary = memory_cache.get(memory_key)
 
+        # XML Formatting for clean data feeds
         if summary:
             profiles.append(f'<profile username="{username}" discord_id="{uid}">\n{summary}\n</profile>')
 
@@ -350,7 +353,7 @@ def summarize_user_history(user_key, evolve=False):
     if not raw_history: return None
     old_summary = memory_cache.get(user_key)
 
-    if old_summary is None or old_summary == "Analyzing user psychology...":
+    if old_summary is None:
         try:
             prompt_messages = [
                 {"role": "system", "content": FIRST_CONTACT_PROMPT},
@@ -543,6 +546,7 @@ def get_roast_response(user_message, group_name, sender_id, username, tagged_use
     
     final_system_content = system_prompt
     if system_memory_text:
+        # XML Injection guarantees the AI won't confuse context with instructions
         final_system_content += "\n\n<database_inject>\n" + system_memory_text + "\n</database_inject>\n\nCRITICAL RULE: DO NOT acknowledge or quote the database tags. Simply use the information against the user."
 
     messages = [{"role": "system", "content": final_system_content}]
@@ -558,6 +562,7 @@ def get_roast_response(user_message, group_name, sender_id, username, tagged_use
                 if config.DISCORD_ID:
                     content = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content)
                 if content:
+                    # Clean User framing
                     if role == "user":
                         messages.append({"role": "user", "content": f"(Sent by {username}): {content}"})
                     else:
@@ -586,6 +591,7 @@ def get_roast_response(user_message, group_name, sender_id, username, tagged_use
         logger.error(f"AI Error: {e}")
         base_reply = ""
 
+    # Hard strip any hallucinated script prefixes
     temp_reply = re.sub(r"^(?:PSI-09|<.*?>|\[.*?\]|\(.*?\)|\*.*?\*)\s*:\s*", "", base_reply or "", flags=re.IGNORECASE)
     clean_reply = re.sub(r"\s{2,}", " ", temp_reply).strip()
 
@@ -665,24 +671,13 @@ def psi09():
         enqueue_user_summary(user_key)
         memory_cache.increment(user_key)
 
-        # -------- FIRST CONTACT / PROFILE GENERATION --------
-        # Checks if cache has pending or empty summary to start the delayed profiler
-        if memory_cache.get(user_key) is None or memory_cache.get(user_key) == "Analyzing user psychology...":
-            memory_cache.set(user_key, "Analyzing user psychology...")
-            
-            def delayed_profiler():
-                time.sleep(6) # 6-second delay to clear OpenRouter's concurrent rate-limit window
-                try:
-                    summary = summarize_user_history(user_key)
-                    if summary:
-                        memory_cache.reset_count(user_key)
-                        _record_user_summary_time(user_key)
-                    else:
-                        memory_cache.cache.pop(user_key, None)
-                except Exception:
-                    memory_cache.cache.pop(user_key, None)
-
-            threading.Thread(target=delayed_profiler, daemon=True).start()
+        if memory_cache.get(user_key) is None:
+            try:
+                summary = summarize_user_history(user_key)
+                if summary:
+                    memory_cache.reset_count(user_key)
+                    _record_user_summary_time(user_key)
+            except Exception: pass
 
         if not is_private:
             if group_memory_cache.increment(group_name) >= config.GROUP_SUMMARY_EVERY_N:
@@ -693,9 +688,7 @@ def psi09():
             return jsonify({"reply": reply}), 200
 
         return jsonify({"reply": ""}), 200
-    except Exception as e:
-        logger.exception(f"/psi09 failure: {e}")
-        return jsonify({"reply": ""}), 500
+    except Exception: return jsonify({"reply": ""}), 500
 
 def mongo_keepalive():
     while True:
