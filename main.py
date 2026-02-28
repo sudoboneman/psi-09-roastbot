@@ -102,7 +102,7 @@ def query_private_brain(messages, temperature, max_output_tokens):
     
     payload = {
         # Using Llama 3.1 8B Free to avoid severe 429 capacity errors from Venice
-        "model": "meta-llama/llama-3.1-8b-instruct:free", 
+        "model": "mgryphe/mythomax-l2-13b:free", 
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_output_tokens,
