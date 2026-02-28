@@ -102,7 +102,7 @@ def query_private_brain(messages, temperature, max_output_tokens):
     
     payload = {
         # The ultimate free smart model. (Swap to "gryphe/mythomax-l2-13b:free" if you want 0% filters)
-        "model": "cognitivecomputations/dolphin-mistral-24b-venice-edition:free", 
+        "model": "meta-llama/llama-3.1-8b-instruct:free", 
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_output_tokens,
