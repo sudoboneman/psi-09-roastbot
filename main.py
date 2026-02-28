@@ -87,7 +87,7 @@ group_memory_col = db["group_memory"]
 # ---------------------------
 # Private Brain Connector
 # ---------------------------
-def query_private_brain(messages, temperature, max_output_tokens):
+def query_private_brain(llm_feed, temperature, max_output_tokens):
     headers = {
         "Authorization": f"Bearer {config.HF_TOKEN}",
         "Content-Type": "application/json"
@@ -95,7 +95,7 @@ def query_private_brain(messages, temperature, max_output_tokens):
     
     payload = {
         "model": config.MODEL,
-        "messages": messages,
+        "messages": llm_feed,
         "stream": False, 
         "options": {
             "temperature": temperature,
@@ -105,7 +105,7 @@ def query_private_brain(messages, temperature, max_output_tokens):
         }
     }
 
-    logger.info(f"LLM Payload:\n{json.dumps(messages, indent=2)}")
+    logger.info(f"LLM Payload:\n{json.dumps(llm_feed, indent=2)}")
 
     try:
         response = requests.post(
@@ -247,7 +247,7 @@ class GroupMemoryCache:
 
 group_memory_cache = GroupMemoryCache(config.MEMORY_TTL)
 
-# Locks to guarantee sequential execution of profile checks/updates before generation
+# Locks to guarantee sequential execution
 user_locks = defaultdict(threading.Lock)
 group_locks = defaultdict(threading.Lock)
 
@@ -338,8 +338,8 @@ def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
         summary = memory_cache.get(memory_key)
 
         if summary:
-            # Explicitly pair the numeric ID and username for bystanders
-            profiles.append(f"### BYSTANDER PROFILE (Numeric ID: {uid} | Username: {username})\n{summary.strip()}")
+            # Clean formatting for bystander blocks
+            profiles.append(f"#### BYSTANDER (Numeric ID: {uid} | Username: {username})\n{summary.strip()}")
 
     return profiles
 
@@ -401,11 +401,11 @@ def summarize_user_history(user_key, evolve=False):
     # Isolated First Contact Logic
     if old_summary is None:
         try:
-            prompt_messages = [
-                {"role": "system", "content": FIRST_CONTACT_PROMPT},
-                {"role": "user", "content": raw_history[-1]["content"]},
+            llm_feed = [
+                {"role": "system", "content": f"### FIRST CONTACT PROMPT\n{FIRST_CONTACT_PROMPT}"},
+                {"role": "user", "content": f"### CHAT HISTORY\n[User]: {raw_history[-1]['content']}"}
             ]
-            summary = query_private_brain(prompt_messages, temperature=0.6, max_output_tokens=200)
+            summary = query_private_brain(llm_feed, temperature=0.6, max_output_tokens=200)
                 
             if summary:
                 memory_cache.set(user_key, summary)
@@ -426,13 +426,15 @@ def summarize_user_history(user_key, evolve=False):
         return old_summary
     
     evolution_prompt = EVOLUTION_PROMPT.format(old_summary=old_summary)
-
-    messages = [{"role": "system", "content": evolution_prompt}]
-    for msg in recent_user_msgs:
-        messages.append({"role": "user", "content": msg})
+    history_lines = [f"[User]: {msg}" for msg in recent_user_msgs]
+    
+    llm_feed = [
+        {"role": "system", "content": f"### EVOLUTION PROMPT\n{evolution_prompt}"},
+        {"role": "user", "content": f"### CHAT HISTORY\n" + "\n".join(history_lines)}
+    ]
 
     try:
-        evolved = query_private_brain(messages, temperature=0.7, max_output_tokens=200)
+        evolved = query_private_brain(llm_feed, temperature=0.7, max_output_tokens=200)
         
         if evolved:
             memory_cache.set(user_key, evolved)
@@ -464,14 +466,15 @@ def summarize_group_history(group_name, raw_history):
                 r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content
             )
 
-        recent.append(f"{sender}: {content}")
+        recent.append(f"[{sender}]: {content}")
 
-    prompt = [{"role": "system", "content": GROUP_SUMMARY_PROMPT}] + [
-        {"role": "user", "content": t} for t in recent
+    llm_feed = [
+        {"role": "system", "content": f"### GROUP SUMMARY PROMPT\n{GROUP_SUMMARY_PROMPT}"},
+        {"role": "user", "content": f"### CHAT HISTORY\n" + "\n".join(recent)}
     ]
 
     try:
-        new_summary = query_private_brain(prompt, temperature=0.8, max_output_tokens=200)
+        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=200)
     except Exception as e:
         logger.warning(f"Group summarization failed for {group_name}: {e}")
         new_summary = old_summary
@@ -495,7 +498,7 @@ def bot_mentioned_in(text: str) -> bool:
     return re.search(discord_pattern, text) is not None
 
 # ---------------------------
-# Core roast generation with unified ChatML enforcement
+# Core roast generation with exact Dict Blocks
 # ---------------------------
 def get_roast_response(group_name, sender_id, username, tagged_users=None):
     tagged_users = tagged_users or []
@@ -518,35 +521,48 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
     else:
         trimmed_group, group_memory = [], None
 
+    llm_feed = []
+
     # ==========================================
-    # 1. Build ONE Clean System Identity Block
+    # BLOCK 1: Roast Prompt
+    # ==========================================
+    system_content = ROAST_PROMPT if is_private_env else GROUP_ROAST_PROMPT
+    llm_feed.append({
+        "role": "system", 
+        "content": f"### ROAST PROMPT\n{system_content}"
+    })
+
+    # ==========================================
+    # BLOCK 2: Target Profile & Group Summary
     # ==========================================
     user_memory = memory_cache.get(user_key)
-    context_blocks = []
-
-    # Target Profile with explicit dual-identification
     if user_memory:
-        context_blocks.append(f"### TARGET PROFILE (Numeric ID: {sender_id} | Username: {username})\n{user_memory.strip()}")
+        llm_feed.append({
+            "role": "system", 
+            "content": f"### TARGET PROFILE (Numeric ID: {sender_id} | Username: {username})\n{user_memory.strip()}"
+        })
 
     if not is_private_env and group_memory:
-        context_blocks.append(f"### GROUP DYNAMIC SUMMARY\n{group_memory.strip()}")
+        llm_feed.append({
+            "role": "system", 
+            "content": f"### GROUP DYNAMIC SUMMARY\n{group_memory.strip()}"
+        })
 
-    # Bystander Profiles injection
+    # ==========================================
+    # BLOCK 3: Bystander Profiles
+    # ==========================================
     tagged_profiles = fetch_tagged_profiles(group_name, tagged_users)
     if tagged_profiles:
-        context_blocks.append("### BYSTANDER PROFILES (Tagged Users)\n" + "\n\n".join(tagged_profiles))
+        llm_feed.append({
+            "role": "system", 
+            "content": f"### BYSTANDER PROFILES\n" + "\n\n".join(tagged_profiles)
+        })
 
-    system_content = ROAST_PROMPT if is_private_env else GROUP_ROAST_PROMPT
+    # ==========================================
+    # BLOCK 4: Chat History
+    # ==========================================
+    history_lines = []
     
-    # Conditional Demarcation - only feeds headers if context exists
-    if context_blocks:
-        system_content += "\n\n--- ESTABLISHED CONTEXT ---\n\n" + "\n\n".join(context_blocks)
-
-    messages = [{"role": "system", "content": system_content}]
-
-    # ==========================================
-    # 2. Build the Native ChatML History Feed
-    # ==========================================
     if is_private_env:
         if trimmed_user:
             for m in trimmed_user:
@@ -555,7 +571,8 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
                 if config.DISCORD_ID:
                     content = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content)
                 if content:
-                    messages.append({"role": role, "content": content})
+                    prefix = "PSI-09" if role == "assistant" else username
+                    history_lines.append(f"[{prefix}]: {content}")
     else:
         if trimmed_group:
             last_20 = trimmed_group[-20:] if len(trimmed_group) > 20 else trimmed_group
@@ -566,20 +583,22 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
                 if config.DISCORD_ID:
                     c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", c)
 
-                if not c:
-                    continue
+                if c:
+                    history_lines.append(f"[{s}]: {c}")
 
-                if s == "PSI-09":
-                    messages.append({"role": "assistant", "content": c})
-                else:
-                    messages.append({"role": "user", "content": f"[{s}]: {c}"})
+    history_text = "\n".join(history_lines) if history_lines else "[No recent history]"
+    
+    llm_feed.append({
+        "role": "user", 
+        "content": f"### CHAT HISTORY\n{history_text}"
+    })
 
     # ==========================================
-    # 3. Call the Brain
+    # Call the Brain
     # ==========================================
     try:
         base_reply = query_private_brain(
-            messages=messages,
+            llm_feed=llm_feed,
             temperature=0.9, 
             max_output_tokens=200
         )
@@ -596,7 +615,7 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
         return ""
 
     # ==========================================
-    # 4. Store the Reply
+    # Store the Reply
     # ==========================================
     user_entry = {
         "role": "assistant",
@@ -644,13 +663,13 @@ def psi09():
         if username == "PSI09_STATUS" and raw_message == "status":
             logger.info("Generating fresh WhatsApp status roast...")
             
-            status_messages = [
-                {"role": "system", "content": STATUS_ROAST_PROMPT},
-                {"role": "user", "content": "Generate a new cynical status update for the humans."}
+            llm_feed = [
+                {"role": "system", "content": f"### STATUS ROAST PROMPT\n{STATUS_ROAST_PROMPT}"},
+                {"role": "user", "content": "### CHAT HISTORY\n[User]: Generate a new cynical status update for the humans."}
             ]
             
             reply = query_private_brain(
-                messages=status_messages,
+                llm_feed=llm_feed,
                 temperature=1.0,  
                 max_output_tokens=150
             )
