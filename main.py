@@ -45,12 +45,10 @@ UTC = timezone.utc
 @dataclass
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
-    # We replace OpenAI keys with HF settings
     HF_TOKEN: str = os.getenv("HF_TOKEN") 
-    HF_ENDPOINT: str = os.getenv("HF_ENDPOINT") # Using the chat endpoint for history support
-    MODEL: str = "dolphin3" # Your private model
+    HF_ENDPOINT: str = os.getenv("HF_ENDPOINT") 
+    MODEL: str = "dolphin3" 
     
-    # Keeping your existing memory settings
     MAX_HISTORY_TOKENS: int = 1500
     MAX_HISTORY_MESSAGES: int = 30
     BOT_NUMBER: str = os.getenv("BOT_NUMBER")
@@ -90,9 +88,6 @@ group_memory_col = db["group_memory"]
 # Private Brain Connector
 # ---------------------------
 def query_private_brain(messages, temperature, max_output_tokens):
-    """
-    Sends the chat history to the private Hugging Face Space running Llama 3.2.
-    """
     headers = {
         "Authorization": f"Bearer {config.HF_TOKEN}",
         "Content-Type": "application/json"
@@ -101,10 +96,10 @@ def query_private_brain(messages, temperature, max_output_tokens):
     payload = {
         "model": config.MODEL,
         "messages": messages,
-        "stream": False, # Keep it simple for now
+        "stream": False, 
         "options": {
             "temperature": temperature,
-            "num_predict": max_output_tokens, # Ollama uses 'num_predict' instead of 'max_tokens'
+            "num_predict": max_output_tokens, 
             "top_k": 40,
             "top_p": 0.9
         }
@@ -117,11 +112,10 @@ def query_private_brain(messages, temperature, max_output_tokens):
             config.HF_ENDPOINT, 
             json=payload, 
             headers=headers, 
-            timeout=480 # Give the CPU a bit more time to think
+            timeout=480 
         )
         response.raise_for_status()
         
-        # Ollama returns the response in 'message.content' inside the JSON
         result = response.json()
         reply_text = result.get("message", {}).get("content", "").strip()
 
@@ -256,17 +250,13 @@ class GroupMemoryCache:
 
 group_memory_cache = GroupMemoryCache(config.MEMORY_TTL)
 
-# pending sets for background summarizer
 _pending_user_summaries = set()
 _pending_group_summaries = set()
 _pending_lock = threading.Lock()
 
-# cooldown trackers to avoid re-summarizing the same key repeatedly
 _last_user_summary_time = {}
 _last_group_summary_time = {}
-SUMMARY_COOLDOWN_SECONDS = (
-    60  # per-user/group cooldown between background summarizations
-)
+SUMMARY_COOLDOWN_SECONDS = 60  
 
 # ---------------------------
 # Utilities: token counting and safe trimming
@@ -277,18 +267,13 @@ def tokens_of(text: str) -> int:
     try:
         return len(ENCODING.encode(text))
     except Exception:
-        # conservative fallback
         return len(text.split())
 
 
 def trim_messages_to_token_budget(messages, max_tokens):
-    """
-    messages: list of dicts with 'content' keys (chronological oldest->newest)
-    returns trimmed list keeping newest messages under token budget
-    """
     total = 0
     trimmed = []
-    for m in reversed(messages):  # iterate newest -> oldest
+    for m in reversed(messages):
         c = m.get("content", "")
         t = tokens_of(c)
         if total + t > max_tokens:
@@ -299,7 +284,7 @@ def trim_messages_to_token_budget(messages, max_tokens):
 
 
 # ---------------------------
-# History utilities (with capped group storage)
+# History utilities
 # ---------------------------
 def fetch_history(user_key, limit_messages=None, max_input_tokens=None):
     limit_messages = limit_messages or config.MAX_HISTORY_MESSAGES
@@ -338,7 +323,6 @@ def fetch_group_history(group_name, limit_messages=None, max_input_tokens=None):
 
     raw = doc["messages"]
     if max_input_tokens:
-        # map to "sender: content" strings for token counting but return original dicts trimmed
         trimmed = []
         total = 0
         for m in reversed(raw):
@@ -364,7 +348,6 @@ def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
         memory_key = f"{group_name}:{uid}"
         summary = memory_cache.get(memory_key)
 
-        # ONLY append if the profile actually exists in the database
         if summary:
             profiles.append(f"### TARGET PROFILE: <@{uid}> (Username: {username})\n{summary}")
 
@@ -390,9 +373,6 @@ def store_user_message(group_name, sender_id, username, display_name, message):
 
 
 def store_group_message(group_name, sender_id, username, display_name, message):
-    """
-    Pushes message and caps the group's messages to GROUP_HISTORY_MAX_MESSAGES using $each+$slice.
-    """
     entry = {
         "sender_id": sender_id,
         "username": username,
@@ -401,7 +381,6 @@ def store_group_message(group_name, sender_id, username, display_name, message):
         "timestamp": datetime.now(UTC).isoformat(),
     }
     try:
-        # push with $each and $slice to keep only the last N messages
         group_history_col.update_one(
             {"_id": group_name},
             {
@@ -419,7 +398,7 @@ def store_group_message(group_name, sender_id, username, display_name, message):
 
 
 # ---------------------------
-# Summarization functions (user & group)
+# Summarization functions
 # ---------------------------
 def summarize_user_history(user_key, evolve=False):
     raw_history, _ = fetch_history(
@@ -432,10 +411,8 @@ def summarize_user_history(user_key, evolve=False):
 
     old_summary = memory_cache.get(user_key)
 
-    # ---------- FIRST CONTACT ----------
     if old_summary is None:
         try:
-            # Replaced OpenAI call
             prompt_messages = [
                 {"role": "system", "content": FIRST_CONTACT_PROMPT},
                 {"role": "user", "content": raw_history[-1]["content"]},
@@ -451,13 +428,10 @@ def summarize_user_history(user_key, evolve=False):
             logger.error(f"First-contact failed for {user_key}: {e}")
             return None
 
-    # ---------- EVOLUTION ----------
     if not evolve:
         return old_summary
 
-    recent_user_msgs = [m["content"] for m in raw_history if m.get("role") == "user"][
-        -15:
-    ]
+    recent_user_msgs = [m["content"] for m in raw_history if m.get("role") == "user"][-15:]
 
     if not recent_user_msgs:
         return old_summary
@@ -469,7 +443,6 @@ def summarize_user_history(user_key, evolve=False):
         messages.append({"role": "user", "content": msg})
 
     try:
-        # Replaced OpenAI call
         evolved = query_private_brain(messages, temperature=0.7, max_output_tokens=200)
         
         if evolved:
@@ -487,9 +460,7 @@ def summarize_group_history(group_name, raw_history):
         return group_memory_cache.get(group_name)
 
     if len(raw_history) < 6:
-        summary = (
-            f"New group '{group_name}' — Understand group dynamic and log observations."
-        )
+        summary = f"New group '{group_name}' — Understand group dynamic and log observations."
         group_memory_cache.set(group_name, summary)
         return summary
 
@@ -500,8 +471,6 @@ def summarize_group_history(group_name, raw_history):
         sender = m.get("username") or "unknown"
         content = m.get("content", "")
 
-        # Force "First Person" Mentions (The Tag Fix)
-        # This ensures the summary sees "@PSI-09" instead of "<@123...>"
         if config.DISCORD_ID:
             content = re.sub(
                 r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content
@@ -514,7 +483,6 @@ def summarize_group_history(group_name, raw_history):
     ]
 
     try:
-        # Replaced OpenAI call
         new_summary = query_private_brain(prompt, temperature=0.8, max_output_tokens=200)
     except Exception as e:
         logger.warning(f"Group summarization failed for {group_name}: {e}")
@@ -536,31 +504,25 @@ def enqueue_user_summary(user_key):
     with _pending_lock:
         _pending_user_summaries.add(user_key)
 
-
 def enqueue_group_summary(group_name):
     with _pending_lock:
         _pending_group_summaries.add(group_name)
-
 
 def _can_run_user_summary(user_key):
     now = time.time()
     last = _last_user_summary_time.get(user_key, 0)
     return (now - last) >= SUMMARY_COOLDOWN_SECONDS
 
-
 def _record_user_summary_time(user_key):
     _last_user_summary_time[user_key] = time.time()
-
 
 def _can_run_group_summary(group_name):
     now = time.time()
     last = _last_group_summary_time.get(group_name, 0)
     return (now - last) >= SUMMARY_COOLDOWN_SECONDS
 
-
 def _record_group_summary_time(group_name):
     _last_group_summary_time[group_name] = time.time()
-
 
 def background_group_summarizer_loop():
     while True:
@@ -583,9 +545,7 @@ def background_group_summarizer_loop():
                 )
 
                 if not raw:
-                    logger.debug(
-                        f"No recent messages to summarize for group {group_name}"
-                    )
+                    logger.debug(f"No recent messages to summarize for group {group_name}")
                     continue
 
                 try:
@@ -593,18 +553,12 @@ def background_group_summarizer_loop():
                     if summary:
                         group_memory_cache.reset_count(group_name)
                         _record_group_summary_time(group_name)
-                        logger.info(
-                            f"Group profile updated successfully for {group_name}"
-                        )
+                        logger.info(f"Group profile updated successfully for {group_name}")
                     else:
-                        logger.warning(
-                            f"Group profile summarization returned None for {group_name}"
-                        )
+                        logger.warning(f"Group profile summarization returned None for {group_name}")
                         to_requeue.add(group_name)
                 except Exception as e:
-                    logger.error(
-                        f"Group profile summarization failed for {group_name}: {e}"
-                    )
+                    logger.error(f"Group profile summarization failed for {group_name}: {e}")
                     to_requeue.add(group_name)
 
             if to_requeue:
@@ -615,7 +569,6 @@ def background_group_summarizer_loop():
             logger.error(f"Background group summarizer loop error: {e}")
 
         time.sleep(12)
-
 
 def background_user_summarizer_loop():
     while True:
@@ -634,9 +587,7 @@ def background_user_summarizer_loop():
                 count = memory_cache.msg_count.get(user_key, 0)
 
                 if count < config.EVOLVE_EVERY_N_MESSAGES:
-                    logger.debug(
-                        f"User {user_key} has only {count} msgs; skipping evolution"
-                    )
+                    logger.debug(f"User {user_key} has only {count} msgs; skipping evolution")
                     to_requeue.add(user_key)
                     continue
 
@@ -647,9 +598,7 @@ def background_user_summarizer_loop():
                         _record_user_summary_time(user_key)
                         logger.info(f"User profile evolved successfully for {user_key}")
                     else:
-                        logger.warning(
-                            f"User profile evolution returned None for {user_key}"
-                        )
+                        logger.warning(f"User profile evolution returned None for {user_key}")
                         to_requeue.add(user_key)
                 except Exception as e:
                     logger.error(f"User profile evolution failed for {user_key}: {e}")
@@ -665,15 +614,12 @@ def background_user_summarizer_loop():
         time.sleep(12)
 
 
-# start background summarizer
 threading.Thread(target=background_group_summarizer_loop, daemon=True).start()
 threading.Thread(target=background_user_summarizer_loop, daemon=True).start()
-
 
 # ---------------------------
 # Mention detection helper
 # ---------------------------
-# Robust detection: match standalone BOT_NUMBER with optional surrounding punctuation/whitespace
 def bot_mentioned_in(text: str) -> bool:
     if not text or not config.DISCORD_ID:
         return False
@@ -681,34 +627,32 @@ def bot_mentioned_in(text: str) -> bool:
     discord_pattern = r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">"
     return re.search(discord_pattern, text) is not None
 
-# ---------------------------
-# Core roast generation with token-budget enforcement
-# ---------------------------
 
 # ---------------------------
 # Core roast generation with unified ChatML enforcement
 # ---------------------------
-def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
+def get_roast_response(group_name, sender_id, tagged_users=None):
     tagged_users = tagged_users or []
     user_key = f"{group_name}:{sender_id}"
     is_private_env = group_name in ["DefaultGroup", "Discord_DM"]
 
-    # Fetch history
-    raw_user, trimmed_user = fetch_history(
+    # Fetch history, ignoring raw_user
+    _, trimmed_user = fetch_history(
         user_key,
         limit_messages=config.MAX_HISTORY_MESSAGES,
         max_input_tokens=config.MAX_HISTORY_TOKENS,
     )
 
     if not is_private_env:
-        raw_group, trimmed_group = fetch_group_history(
+        # Ignore raw_group
+        _, trimmed_group = fetch_group_history(
             group_name,
             limit_messages=config.GROUP_HISTORY_SLICE,
             max_input_tokens=config.GROUP_HISTORY_TOKEN_LIMIT,
         )
         group_memory = group_memory_cache.get(group_name)
     else:
-        raw_group, trimmed_group, group_memory = [], [], ""
+        trimmed_group, group_memory = [], ""
 
     # ==========================================
     # 1. Build ONE Clean System Identity Block
@@ -738,11 +682,7 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
     # ==========================================
     # 2. Build the Native ChatML History Feed
     # ==========================================
-    # We DO NOT pop the last message. It's already in the DB, so it will naturally 
-    # act as the final 'user' trigger for the LLM to respond to.
-    
     if is_private_env:
-        # Private Chat: Natively pass user/assistant turns
         if trimmed_user:
             for m in trimmed_user:
                 role = m.get("role", "user")
@@ -752,7 +692,6 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
                 if content:
                     messages.append({"role": role, "content": content})
     else:
-        # Group Chat: Map everything into a clean user/assistant timeline
         if trimmed_group:
             last_20 = trimmed_group[-20:] if len(trimmed_group) > 20 else trimmed_group
             for entry in last_20:
@@ -766,10 +705,8 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
                     continue
 
                 if s == "PSI-09":
-                    # Map bot's past messages natively to the 'assistant' role
                     messages.append({"role": "assistant", "content": c})
                 else:
-                    # Map human messages to 'user' role, but inject their name
                     messages.append({"role": "user", "content": f"[{s}]: {c}"})
 
     # ==========================================
@@ -785,7 +722,6 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
         logger.error(f"AI Error: {e}")
         base_reply = ""
 
-    # Clean up prefixes or hallucinated continuation brackets
     temp_reply = re.sub(r"^PSI-09\s*:\s*", "", base_reply or "", flags=re.IGNORECASE)
     temp_reply = re.sub(r"\[.*?\]:.*", "", temp_reply, flags=re.DOTALL) 
     clean_reply = re.sub(r"\s{3,}", " ", temp_reply).strip()
@@ -828,7 +764,6 @@ def get_roast_response(user_message, group_name, sender_id, tagged_users=None):
 def health():
     return jsonify({"status": "ok"}), 200
 
-
 @app.route("/psi09", methods=["POST"])
 def psi09():
     try:
@@ -841,7 +776,6 @@ def psi09():
             logger.warning(f"Blocked malicious webhook loop injection from {username}")
             return jsonify({"reply": ""}), 200
         
-        # --- NEW STATUS LOGIC: Independent and Fresh ---
         if username == "PSI09_STATUS" and raw_message == "status":
             logger.info("Generating fresh WhatsApp status roast...")
             
@@ -852,23 +786,18 @@ def psi09():
             
             reply = query_private_brain(
                 messages=status_messages,
-                temperature=1.0,  # High temperature for maximum freshness/randomness
+                temperature=1.0,  
                 max_output_tokens=150
             )
             
-            # Clean up potential prefixes
             clean_reply = re.sub(r"^PSI-09\s*:\s*", "", reply or "", flags=re.IGNORECASE).strip()
             return jsonify({"reply": clean_reply}), 200
-        # --- END STATUS LOGIC ---
 
         display_name = data.get("display_name") or username
         group_name = data.get("group_name") or "DefaultGroup"
         tagged_users = data.get("tagged_users", [])
 
-        if not username or not sender_id:
-            return jsonify({"reply": ""}), 200
-
-        if not raw_message:
+        if not username or not sender_id or not raw_message:
             return jsonify({"reply": ""}), 200
 
         user_message = raw_message
@@ -898,7 +827,7 @@ def psi09():
         enqueue_user_summary(user_key)
 
         # -------- MESSAGE COUNT --------
-        msg_count = memory_cache.increment(user_key)
+        memory_cache.increment(user_key)
 
         # -------- FIRST CONTACT --------
         if memory_cache.get(user_key) is None:
@@ -912,7 +841,6 @@ def psi09():
                 memory_cache.reset_count(user_key)
                 _record_user_summary_time(user_key)
             else:
-                # first-contact failed → do not reset cooldown, allow retry later
                 pass
 
         # -------- GROUP MEMORY --------
@@ -923,7 +851,6 @@ def psi09():
         # -------- REPLY LOGIC --------
         if is_private or bot_mentioned_in(raw_message):
             reply = get_roast_response(
-                user_message.strip() or "[mention]",
                 group_name,
                 sender_id,
                 tagged_users,
@@ -955,9 +882,7 @@ threading.Thread(target=mongo_keepalive, daemon=True).start()
 # ---------------------------
 
 if __name__ == "__main__":
-    # Fallback to 7860 if PORT is not set
     port = int(os.getenv("PORT", 7860)) 
-    
     log = logging.getLogger("werkzeug")
     log.setLevel(logging.ERROR)
     
