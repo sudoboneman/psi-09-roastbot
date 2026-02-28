@@ -103,12 +103,18 @@ def query_private_brain(messages, temperature, max_output_tokens):
     if config.HF_TOKEN:
         headers["Authorization"] = f"Bearer {config.HF_TOKEN}"
     
+    # ---------------------------
+    # Brain Connector (Hugging Face / Ollama Private API)
+    # ---------------------------
     payload = {
         "model": config.MODEL, 
         "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_output_tokens,
-        "top_p": 0.9
+        "stream": False, # <-- THIS DISABLES STREAMING AND FIXES THE "EXTRA DATA" CRASH
+        "options": {
+            "temperature": temperature,
+            "num_predict": max_output_tokens,
+            "top_p": 0.9
+        }
     }
 
     logger.info("Sending payload to Hugging Face Private Brain...")
@@ -118,12 +124,19 @@ def query_private_brain(messages, temperature, max_output_tokens):
             config.HF_ENDPOINT, 
             json=payload, 
             headers=headers, 
-            timeout=480 # Higher timeout for 3B model inference speed
+            timeout=480 
         )
         response.raise_for_status()
         
         result = response.json()
-        reply_text = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        
+        if "choices" in result:
+            reply_text = result["choices"][0].get("message", {}).get("content", "").strip()
+        elif "message" in result:
+            reply_text = result["message"].get("content", "").strip()
+        else:
+            logger.error(f"Unrecognized response format: {result}")
+            reply_text = ""
 
         logger.info(f"HF Output: {reply_text}")
         return reply_text
