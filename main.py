@@ -47,7 +47,7 @@ class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     HF_TOKEN: str = os.getenv("HF_TOKEN") 
     HF_ENDPOINT: str = os.getenv("HF_ENDPOINT") 
-    MODEL: str = "dolphin3" 
+    MODEL: str = "phi3.5" 
     
     MAX_HISTORY_TOKENS: int = 1500
     MAX_HISTORY_MESSAGES: int = 30
