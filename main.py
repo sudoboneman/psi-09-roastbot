@@ -458,7 +458,13 @@ def summarize_group_history(group_name, raw_history):
 
     recent = []
     for m in raw_history[-25:]:
-        sender = m.get("username") or "unknown"
+        # 1. Look for all possible name keys to fix the 'unknown' bug
+        sender = m.get("sender") or m.get("username") or m.get("display_name") or "unknown"
+        
+        # 2. Skip the bot entirely. We only want to summarize human dynamics.
+        if sender == "PSI-09":
+            continue
+
         content = m.get("content", "")
 
         if config.DISCORD_ID:
@@ -474,7 +480,7 @@ def summarize_group_history(group_name, raw_history):
     ]
 
     try:
-        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=200)
+        new_summary = query_private_brain(llm_feed, temperature=0.9, max_output_tokens=200)
     except Exception as e:
         logger.warning(f"Group summarization failed for {group_name}: {e}")
         new_summary = old_summary
