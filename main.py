@@ -610,7 +610,7 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
         base_reply = query_private_brain(
             llm_feed=llm_feed,
             temperature=0.9, 
-            max_output_tokens=200
+            max_output_tokens=1000
         )
     except Exception as e:
         logger.error(f"AI Error: {e}")
@@ -670,7 +670,7 @@ def psi09():
                 {"role": "system", "content": f"### STATUS ROAST PROMPT\n{STATUS_ROAST_PROMPT}"},
                 {"role": "user", "content": "### CHAT HISTORY\n[User]: Generate a new cynical status update for the humans."}
             ]
-            reply = query_private_brain(llm_feed, temperature=1.0, max_output_tokens=150)
+            reply = query_private_brain(llm_feed, temperature=1.0, max_output_tokens=400)
             clean_reply = re.sub(r"^PSI-09\s*:\s*", "", reply or "", flags=re.IGNORECASE).strip()
             return jsonify({"reply": clean_reply}), 200
 
