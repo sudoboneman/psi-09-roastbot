@@ -12,11 +12,7 @@ import threading
 import time
 import logging
 import sys
-
-# --- NEW SDK IMPORTS ---
-from google import genai
-from google.genai import types
-
+import requests
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from dataclasses import dataclass
@@ -49,8 +45,9 @@ UTC = timezone.utc
 @dataclass
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY") 
-    MODEL: str = "gemini-3-flash-preview" 
+    HF_TOKEN: str = os.getenv("HF_TOKEN") 
+    HF_ENDPOINT: str = os.getenv("HF_ENDPOINT") 
+    MODEL: str = "dolphin8b" 
     
     MAX_HISTORY_TOKENS: int = 1500
     MAX_HISTORY_MESSAGES: int = 30
@@ -64,19 +61,6 @@ class Config:
     GROUP_HISTORY_MAX_MESSAGES: int = 2000
 
 config = Config()
-
-# ---------------------------
-# Initialize Gemini Client
-# ---------------------------
-try:
-    if config.GEMINI_API_KEY:
-        client = genai.Client(api_key=config.GEMINI_API_KEY)
-    else:
-        logger.error("GEMINI_API_KEY is missing. AI features will fail.")
-        client = None
-except Exception as e:
-    logger.error(f"Failed to initialize Gemini Client: {e}")
-    client = None
 
 # ---------------------------
 # MongoDB
@@ -101,78 +85,58 @@ group_history_col = db["group_history"]
 group_memory_col = db["group_memory"]
 
 # ---------------------------
-# Private Brain Connector (New SDK)
+# Private Brain Connector
 # ---------------------------
 def query_private_brain(llm_feed, temperature, max_output_tokens):
-    """
-    Connects to Google's Gemini API using the new google-genai SDK.
-    """
-    if not client:
-        logger.error("Cannot query brain: Client not initialized.")
-        return None
+    headers = {
+        "Authorization": f"Bearer {config.HF_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": config.MODEL,
+        "messages": llm_feed,
+        "stream": False, 
+        "options": {
+            "temperature": temperature,
+            "num_predict": max_output_tokens, 
+            "top_k": 40,
+            "top_p": 0.9
+        }
+    }
 
-    # 1. Parse System vs. User messages
-    system_parts = [msg["content"] for msg in llm_feed if msg["role"] == "system"]
-    prompt_parts = [msg["content"] for msg in llm_feed if msg["role"] != "system"]
-
-    system_instruction = "\n\n".join(system_parts)
-    final_prompt = "\n\n".join(prompt_parts)
-
-    # 2. Configure generation parameters
-    # The new SDK uses types.GenerateContentConfig
-    generate_config = types.GenerateContentConfig(
-        temperature=temperature,
-        max_output_tokens=max_output_tokens,
-        top_p=0.95,
-        top_k=40,
-        system_instruction=system_instruction, # System prompt goes here now
-        safety_settings=[
-             types.SafetySetting(
-                 category="HARM_CATEGORY_HARASSMENT",
-                 threshold="BLOCK_NONE"
-             ),
-             types.SafetySetting(
-                 category="HARM_CATEGORY_HATE_SPEECH",
-                 threshold="BLOCK_NONE"
-             ),
-             types.SafetySetting(
-                 category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                 threshold="BLOCK_NONE"
-             ),
-             types.SafetySetting(
-                 category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                 threshold="BLOCK_NONE"
-             ),
-        ]
-    )
+    logger.info(f"LLM Payload:\n{json.dumps(llm_feed, indent=2)}")
 
     try:
-        logger.info(f"Gemini Input (System len: {len(system_instruction)}, Prompt len: {len(final_prompt)})")
-
-        response = client.models.generate_content(
-            model=config.MODEL,
-            contents=final_prompt,
-            config=generate_config
+        response = requests.post(
+            config.HF_ENDPOINT, 
+            json=payload, 
+            headers=headers, 
+            timeout=480 
         )
+        response.raise_for_status()
+        
+        result = response.json()
+        reply_text = result.get("message", {}).get("content", "").strip()
 
-        reply_text = response.text.strip()
         logger.info(f"Output: {reply_text}")
+        
         return reply_text
         
-    except Exception as e:
-        logger.error(f"GEMINI CONNECTION ERROR: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"CORTEX CONNECTION ERROR: {e}")
         return None
 
 app = Flask(__name__)
 CORS(app)
 
 # ---------------------------
-# Token encoding
+# Token encoding (tiktoken)
 # ---------------------------
 try:
-    ENCODING = tiktoken.get_encoding("cl100k_base")
+    ENCODING = tiktoken.encoding_for_model(config.MODEL)
 except Exception:
-    ENCODING = tiktoken.get_encoding("gpt2")
+    ENCODING = tiktoken.get_encoding("cl100k_base")
 
 # ---------------------------
 # Memory caches & Concurrency Locks
@@ -283,11 +247,12 @@ class GroupMemoryCache:
 
 group_memory_cache = GroupMemoryCache(config.MEMORY_TTL)
 
+# Locks to guarantee sequential execution
 user_locks = defaultdict(threading.Lock)
 group_locks = defaultdict(threading.Lock)
 
 # ---------------------------
-# Utilities
+# Utilities: token counting and safe trimming
 # ---------------------------
 def tokens_of(text: str) -> int:
     if not text:
@@ -373,6 +338,7 @@ def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
         summary = memory_cache.get(memory_key)
 
         if summary:
+            # Clean formatting for bystander blocks
             profiles.append(f"#### BYSTANDER (Numeric ID: {uid} | Username: {username})\n{summary.strip()}")
 
     return profiles
@@ -432,6 +398,7 @@ def summarize_user_history(user_key, evolve=False):
 
     old_summary = memory_cache.get(user_key)
 
+    # Isolated First Contact Logic
     if old_summary is None:
         try:
             llm_feed = [
@@ -452,6 +419,7 @@ def summarize_user_history(user_key, evolve=False):
     if not evolve:
         return old_summary
 
+    # Isolated Evolution Logic
     recent_user_msgs = [m["content"] for m in raw_history if m.get("role") == "user"][-15:]
 
     if not recent_user_msgs:
@@ -490,15 +458,20 @@ def summarize_group_history(group_name, raw_history):
 
     recent = []
     for m in raw_history[-25:]:
+        # 1. Look for all possible name keys to fix the 'unknown' bug
         sender = m.get("sender") or m.get("username") or m.get("display_name") or "unknown"
+        
+        # 2. Skip the bot entirely. We only want to summarize human dynamics.
         if sender == "PSI-09":
             continue
 
         content = m.get("content", "")
+
         if config.DISCORD_ID:
             content = re.sub(
                 r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content
             )
+
         recent.append(f"[{sender}]: {content}")
 
     llm_feed = [
@@ -520,6 +493,9 @@ def summarize_group_history(group_name, raw_history):
 
     return new_summary or old_summary
 
+# ---------------------------
+# Mention detection helper
+# ---------------------------
 def bot_mentioned_in(text: str) -> bool:
     if not text or not config.DISCORD_ID:
         return False
@@ -527,6 +503,9 @@ def bot_mentioned_in(text: str) -> bool:
     discord_pattern = r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">"
     return re.search(discord_pattern, text) is not None
 
+# ---------------------------
+# Core roast generation with exact Dict Blocks
+# ---------------------------
 def get_roast_response(group_name, sender_id, username, tagged_users=None):
     tagged_users = tagged_users or []
     user_key = f"{group_name}:{sender_id}"
@@ -550,12 +529,18 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
 
     llm_feed = []
 
+    # ==========================================
+    # BLOCK 1: Roast Prompt
+    # ==========================================
     system_content = ROAST_PROMPT if is_private_env else GROUP_ROAST_PROMPT
     llm_feed.append({
         "role": "system", 
         "content": f"### ROAST PROMPT\n{system_content}"
     })
 
+    # ==========================================
+    # BLOCK 2: Target Profile & Group Summary
+    # ==========================================
     user_memory = memory_cache.get(user_key)
     if user_memory:
         llm_feed.append({
@@ -569,6 +554,9 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
             "content": f"### GROUP DYNAMIC SUMMARY\n{group_memory.strip()}"
         })
 
+    # ==========================================
+    # BLOCK 3: Bystander Profiles
+    # ==========================================
     tagged_profiles = fetch_tagged_profiles(group_name, tagged_users)
     if tagged_profiles:
         llm_feed.append({
@@ -576,6 +564,9 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
             "content": f"### BYSTANDER PROFILES\n" + "\n\n".join(tagged_profiles)
         })
 
+    # ==========================================
+    # BLOCK 4: Chat History
+    # ==========================================
     history_lines = []
     
     if is_private_env:
@@ -594,8 +585,10 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
             for entry in last_20:
                 s = entry.get("sender") or entry.get("username") or entry.get("display_name") or "unknown"
                 c = entry.get("content", "").strip()
+                
                 if config.DISCORD_ID:
                     c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", c)
+
                 if c:
                     history_lines.append(f"[{s}]: {c}")
 
@@ -606,6 +599,9 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
         "content": f"### CHAT HISTORY\n{history_text}"
     })
 
+    # ==========================================
+    # Call the Brain
+    # ==========================================
     try:
         base_reply = query_private_brain(
             llm_feed=llm_feed,
@@ -624,6 +620,9 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
         logger.info(f"Empty or failed response for {user_key}. Skipping storage.")
         return ""
 
+    # ==========================================
+    # Store the Reply
+    # ==========================================
     user_entry = {
         "role": "assistant",
         "content": clean_reply,
@@ -648,6 +647,9 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
 
     return clean_reply
 
+# ---------------------------
+# Flask routes
+# ---------------------------
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({"status": "ok"}), 200
@@ -666,11 +668,18 @@ def psi09():
         
         if username == "PSI09_STATUS" and raw_message == "status":
             logger.info("Generating fresh WhatsApp status roast...")
+            
             llm_feed = [
                 {"role": "system", "content": f"### STATUS ROAST PROMPT\n{STATUS_ROAST_PROMPT}"},
                 {"role": "user", "content": "### CHAT HISTORY\n[User]: Generate a new cynical status update for the humans."}
             ]
-            reply = query_private_brain(llm_feed, temperature=1.0, max_output_tokens=150)
+            
+            reply = query_private_brain(
+                llm_feed=llm_feed,
+                temperature=1.0,  
+                max_output_tokens=150
+            )
+            
             clean_reply = re.sub(r"^PSI-09\s*:\s*", "", reply or "", flags=re.IGNORECASE).strip()
             return jsonify({"reply": clean_reply}), 200
 
@@ -691,14 +700,22 @@ def psi09():
 
         is_private = group_name in ["DefaultGroup", "Discord_DM"]
 
+        # -------- STORE MESSAGE --------
         if is_private:
-            store_user_message(group_name, sender_id, username, display_name, user_message)
+            store_user_message(
+                group_name, sender_id, username, display_name, user_message
+            )
         else:
-            store_group_message(group_name, sender_id, username, display_name, user_message)
-            store_user_message(group_name, sender_id, username, display_name, user_message)
+            store_group_message(
+                group_name, sender_id, username, display_name, user_message
+            )
+            store_user_message(
+                group_name, sender_id, username, display_name, user_message
+            )
 
         user_key = f"{group_name}:{sender_id}"
 
+        # -------- SEQUENTIAL FIRST CONTACT / EVOLUTION --------
         with user_locks[user_key]:
             msg_count = memory_cache.increment(user_key)
             current_user_memory = memory_cache.get(user_key)
@@ -713,6 +730,7 @@ def psi09():
                 summarize_user_history(user_key, evolve=True)
                 memory_cache.reset_count(user_key)
 
+        # -------- SEQUENTIAL GROUP MEMORY UPDATE --------
         if not is_private:
             with group_locks[group_name]:
                 group_msg_count = group_memory_cache.increment(group_name)
@@ -727,8 +745,14 @@ def psi09():
                     summarize_group_history(group_name, raw_group_hist)
                     group_memory_cache.reset_count(group_name)
 
+        # -------- REPLY LOGIC --------
         if is_private or bot_mentioned_in(raw_message):
-            reply = get_roast_response(group_name, sender_id, username, tagged_users)
+            reply = get_roast_response(
+                group_name,
+                sender_id,
+                username,          
+                tagged_users,
+            )
             return jsonify({"reply": reply}), 200
 
         return jsonify({"reply": ""}), 200
@@ -737,6 +761,9 @@ def psi09():
         logger.exception(f"/psi09 failure: {e}")
         return jsonify({"reply": ""}), 500
 
+# ---------------------------
+# Mongo keepalive thread
+# ---------------------------
 def mongo_keepalive():
     while True:
         try:
@@ -747,6 +774,9 @@ def mongo_keepalive():
 
 threading.Thread(target=mongo_keepalive, daemon=True).start()
 
+# ---------------------------
+# Run
+# ---------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 7860)) 
     log = logging.getLogger("werkzeug")
