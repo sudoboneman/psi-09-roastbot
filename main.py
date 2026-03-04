@@ -438,7 +438,7 @@ def summarize_user_history(user_key, evolve=False):
                 {"role": "system", "content": f"### FIRST CONTACT PROMPT\n{FIRST_CONTACT_PROMPT}"},
                 {"role": "user", "content": f"### CHAT HISTORY\n[User]: {raw_history[-1]['content']}"}
             ]
-            summary = query_private_brain(llm_feed, temperature=0.6, max_output_tokens=200)
+            summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=400)
                 
             if summary:
                 memory_cache.set(user_key, summary)
@@ -466,7 +466,7 @@ def summarize_user_history(user_key, evolve=False):
     ]
 
     try:
-        evolved = query_private_brain(llm_feed, temperature=0.7, max_output_tokens=200)
+        evolved = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=400)
         
         if evolved:
             memory_cache.set(user_key, evolved)
@@ -507,7 +507,7 @@ def summarize_group_history(group_name, raw_history):
     ]
 
     try:
-        new_summary = query_private_brain(llm_feed, temperature=0.9, max_output_tokens=200)
+        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=600)
     except Exception as e:
         logger.warning(f"Group summarization failed for {group_name}: {e}")
         new_summary = old_summary
