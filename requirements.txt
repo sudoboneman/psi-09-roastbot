@@ -5,5 +5,5 @@ pymongo
 tiktoken
 certifi
 gunicorn
-google-generativeai
+google-genai
 
