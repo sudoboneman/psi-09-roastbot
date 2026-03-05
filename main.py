@@ -13,7 +13,6 @@ import time
 import logging
 import sys
 
-# --- NEW SDK IMPORTS ---
 from google import genai
 from google.genai import types
 
@@ -26,13 +25,10 @@ from prompts import (
     GROUP_ROAST_PROMPT, 
     FIRST_CONTACT_PROMPT, 
     EVOLUTION_PROMPT, 
-    GROUP_SUMMARY_PROMPT,
-    STATUS_ROAST_PROMPT
+    GROUP_SUMMARY_PROMPT
 )
 
-# ---------------------------
 # Environment & Logging
-# ---------------------------
 load_dotenv()
 
 logging.basicConfig(
@@ -43,9 +39,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 UTC = timezone.utc
 
-# ---------------------------
+
 # Config
-# ---------------------------
 @dataclass
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
@@ -65,9 +60,8 @@ class Config:
 
 config = Config()
 
-# ---------------------------
+
 # Initialize Gemini Client
-# ---------------------------
 try:
     if config.GEMINI_API_KEY:
         client = genai.Client(api_key=config.GEMINI_API_KEY)
@@ -78,9 +72,8 @@ except Exception as e:
     logger.error(f"Failed to initialize Gemini Client: {e}")
     client = None
 
-# ---------------------------
+
 # MongoDB
-# ---------------------------
 mongo_client = MongoClient(
     config.MONGO_URI,
     tlsCAFile=certifi.where(),
@@ -100,9 +93,7 @@ memory_col = db["user_memory"]
 group_history_col = db["group_history"]
 group_memory_col = db["group_memory"]
 
-# ---------------------------
-# Private Brain Connector (New SDK)
-# ---------------------------
+
 def query_private_brain(llm_feed, temperature, max_output_tokens):
     """
     Connects to Google's Gemini API using the new google-genai SDK.
@@ -119,13 +110,12 @@ def query_private_brain(llm_feed, temperature, max_output_tokens):
     final_prompt = "\n\n".join(prompt_parts)
 
     # 2. Configure generation parameters
-    # The new SDK uses types.GenerateContentConfig
     generate_config = types.GenerateContentConfig(
         temperature=temperature,
         max_output_tokens=max_output_tokens,
         top_p=0.95,
         top_k=40,
-        system_instruction=system_instruction, # System prompt goes here now
+        system_instruction=system_instruction,
         safety_settings=[
              types.SafetySetting(
                  category="HARM_CATEGORY_HARASSMENT",
@@ -166,17 +156,15 @@ def query_private_brain(llm_feed, temperature, max_output_tokens):
 app = Flask(__name__)
 CORS(app)
 
-# ---------------------------
+
 # Token encoding
-# ---------------------------
 try:
     ENCODING = tiktoken.get_encoding("cl100k_base")
 except Exception:
     ENCODING = tiktoken.get_encoding("gpt2")
 
-# ---------------------------
+
 # Memory caches & Concurrency Locks
-# ---------------------------
 class MemoryCache:
     def __init__(self, ttl_seconds):
         self.cache = {}
@@ -286,9 +274,8 @@ group_memory_cache = GroupMemoryCache(config.MEMORY_TTL)
 user_locks = defaultdict(threading.Lock)
 group_locks = defaultdict(threading.Lock)
 
-# ---------------------------
+
 # Utilities
-# ---------------------------
 def tokens_of(text: str) -> int:
     if not text:
         return 0
@@ -309,9 +296,6 @@ def trim_messages_to_token_budget(messages, max_tokens):
         total += t
     return trimmed
 
-# ---------------------------
-# History utilities
-# ---------------------------
 def fetch_history(user_key, limit_messages=None, max_input_tokens=None):
     limit_messages = limit_messages or config.MAX_HISTORY_MESSAGES
     try:
@@ -418,9 +402,15 @@ def store_group_message(group_name, sender_id, username, display_name, message):
     except PyMongoError as e:
         logger.warning(f"Failed to store group message for {group_name}: {e}")
 
-# ---------------------------
+def bot_mentioned_in(text: str) -> bool:
+    if not text or not config.DISCORD_ID:
+        return False
+
+    discord_pattern = r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">"
+    return re.search(discord_pattern, text) is not None
+
+
 # Summarization functions
-# ---------------------------
 def summarize_user_history(user_key, evolve=False):
     raw_history, _ = fetch_history(
         user_key,
@@ -520,13 +510,7 @@ def summarize_group_history(group_name, raw_history):
 
     return new_summary or old_summary
 
-def bot_mentioned_in(text: str) -> bool:
-    if not text or not config.DISCORD_ID:
-        return False
-
-    discord_pattern = r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">"
-    return re.search(discord_pattern, text) is not None
-
+# Core utilities
 def get_roast_response(group_name, sender_id, username, tagged_users=None):
     tagged_users = tagged_users or []
     user_key = f"{group_name}:{sender_id}"
@@ -573,7 +557,7 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
     if tagged_profiles:
         llm_feed.append({
             "role": "system", 
-            "content": f"### BYSTANDER PROFILES\n" + "\n\n".join(tagged_profiles)
+            "content": f"### TAGGED MEMBER PROFILES\n" + "\n\n".join(tagged_profiles)
         })
 
     history_lines = []
@@ -659,21 +643,6 @@ def psi09():
         raw_message = data.get("message", "")
         sender_id = data.get("sender_id")
         username = data.get("username")
-
-        if username and "WEBHOOK" in username.upper():
-            logger.warning(f"Blocked malicious webhook loop injection from {username}")
-            return jsonify({"reply": ""}), 200
-        
-        if username == "PSI09_STATUS" and raw_message == "status":
-            logger.info("Generating fresh WhatsApp status roast...")
-            llm_feed = [
-                {"role": "system", "content": f"### STATUS ROAST PROMPT\n{STATUS_ROAST_PROMPT}"},
-                {"role": "user", "content": "### CHAT HISTORY\n[User]: Generate a new cynical status update for the humans."}
-            ]
-            reply = query_private_brain(llm_feed, temperature=1.0, max_output_tokens=400)
-            clean_reply = re.sub(r"^PSI-09\s*:\s*", "", reply or "", flags=re.IGNORECASE).strip()
-            return jsonify({"reply": clean_reply}), 200
-
         display_name = data.get("display_name") or username
         group_name = data.get("group_name") or "DefaultGroup"
         tagged_users = data.get("tagged_users", [])
