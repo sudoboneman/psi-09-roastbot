@@ -646,6 +646,7 @@ def psi09():
         display_name = data.get("display_name") or username
         group_name = data.get("group_name") or "DefaultGroup"
         tagged_users = data.get("tagged_users", [])
+        force_reply = data.get("force_reply", False)
 
         if not username or not sender_id or not raw_message:
             return jsonify({"reply": ""}), 200
@@ -696,7 +697,7 @@ def psi09():
                     summarize_group_history(group_name, raw_group_hist)
                     group_memory_cache.reset_count(group_name)
 
-        if is_private or bot_mentioned_in(raw_message):
+        if is_private or force_reply or bot_mentioned_in(raw_message):
             reply = get_roast_response(group_name, sender_id, username, tagged_users)
             return jsonify({"reply": reply}), 200
 
