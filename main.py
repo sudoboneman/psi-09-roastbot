@@ -594,7 +594,7 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
         base_reply = query_private_brain(
             llm_feed=llm_feed,
             temperature=0.9, 
-            max_output_tokens=400
+            max_output_tokens=800
         )
     except Exception as e:
         logger.error(f"AI Error: {e}")
