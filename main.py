@@ -641,7 +641,7 @@ def summarize_group_history(group_name, raw_history):
 def get_roast_response(group_name, sender_id, username, tagged_users=None):
     tagged_users = tagged_users or []
     user_key = f"{group_name}:{username}"
-    is_private_env = group_name in ["DefaultGroup", "Discord_DM"]
+    is_private_env = group_name in ["private_chat"]
 
     _, trimmed_user = fetch_history(
         user_key,
