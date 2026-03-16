@@ -783,7 +783,7 @@ def psi09():
         display_name = data.get("display_name") or username
         group_name = data.get("group_name") or "DefaultGroup"
 
-        if group_name.lower() in ["DefaultGroup", "Discord_DM", "MC_DM"]:
+        if group_name.lower() in ["defaultgroup", "discord_dm", "mc_dm"]:
             group_name = "private_chat"
 
         tagged_users = data.get("tagged_users", [])
