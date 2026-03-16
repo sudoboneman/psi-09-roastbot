@@ -584,7 +584,7 @@ def summarize_global_history(global_key, evolve=False):
     ]
 
     try:
-        new_summary = query_private_brain(llm_feed, temperature=0.7, max_output_tokens=1000)
+        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=3000)
         if new_summary:
             global_memory_cache.set(global_key, new_summary)
             logger.info(f"Global profile updated for {global_key}")
@@ -624,7 +624,7 @@ def summarize_group_history(group_name, raw_history):
     ]
 
     try:
-        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=2000)
+        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=3000)
     except Exception as e:
         logger.warning(f"Group summarization failed for {group_name}: {e}")
         new_summary = old_summary
