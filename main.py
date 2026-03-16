@@ -93,6 +93,10 @@ memory_col = db["user_memory"]
 group_history_col = db["group_history"]
 group_memory_col = db["group_memory"]
 
+# --- NEW GLOBAL TABLES ---
+global_history_col = db["global_history"]
+global_memory_col = db["global_memory"]
+
 
 def query_private_brain(llm_feed, temperature, max_output_tokens):
     """
@@ -271,9 +275,63 @@ class GroupMemoryCache:
 
 group_memory_cache = GroupMemoryCache(config.MEMORY_TTL)
 
+# --- NEW GLOBAL CACHE ---
+class GlobalMemoryCache:
+    def __init__(self, ttl_seconds):
+        self.cache = {}
+        self.expiry = {}
+        self.msg_count = defaultdict(int)
+        self.ttl = timedelta(seconds=ttl_seconds)
+        self.lock = threading.Lock()
+
+    def get(self, key):
+        now = datetime.now(UTC)
+        with self.lock:
+            if key in self.cache and self.expiry.get(key, now) > now:
+                return self.cache[key]
+
+        try:
+            doc = global_memory_col.find_one({"_id": key})
+            summary = doc.get("summary") if doc and doc.get("summary") else None
+        except PyMongoError as e:
+            logger.warning(f"Failed to load global memory for {key}: {e}")
+            summary = None
+
+        with self.lock:
+            self.cache[key] = summary
+            self.expiry[key] = now + self.ttl
+
+        return summary
+
+    def set(self, key, value):
+        now = datetime.now(UTC)
+        try:
+            global_memory_col.update_one(
+                {"_id": key},
+                {"$set": {"summary": value}},
+                upsert=True,
+            )
+        except PyMongoError as e:
+            logger.warning(f"Failed to persist global memory for {key}: {e}")
+
+        with self.lock:
+            self.cache[key] = value
+            self.expiry[key] = now + self.ttl
+
+    def increment(self, key):
+        with self.lock:
+            self.msg_count[key] += 1
+            return self.msg_count[key]
+
+    def reset_count(self, key):
+        with self.lock:
+            self.msg_count[key] = 0
+
+global_memory_cache = GlobalMemoryCache(config.MEMORY_TTL)
+
 user_locks = defaultdict(threading.Lock)
 group_locks = defaultdict(threading.Lock)
-
+global_locks = defaultdict(threading.Lock)
 
 # Utilities
 def tokens_of(text: str) -> int:
@@ -344,26 +402,47 @@ def fetch_group_history(group_name, limit_messages=None, max_input_tokens=None):
         return raw, trimmed
     return raw, raw
 
+def fetch_global_history(global_key, limit_messages=None, max_input_tokens=None):
+    limit_messages = limit_messages or config.MAX_HISTORY_MESSAGES
+    try:
+        doc = global_history_col.find_one(
+            {"_id": global_key}, {"messages": {"$slice": -limit_messages}}
+        )
+    except PyMongoError as e:
+        logger.warning(f"Failed to fetch global history for {global_key}: {e}")
+        return [], []
+
+    if not doc or "messages" not in doc:
+        return [], []
+
+    raw = doc["messages"]
+    if max_input_tokens:
+        trimmed = trim_messages_to_token_budget(raw, max_input_tokens)
+        return raw, trimmed
+    return raw, raw
+
 def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
     profiles = []
     for u in tagged_users[:max_targets]:
         uid = u.get("id")
-        username = u.get("username") or "Unknown"
+        username = u.get("username")
 
-        if not uid:
+        if not username:
             continue  
 
-        memory_key = f"{group_name}:{uid}"
-        summary = memory_cache.get(memory_key)
+        memory_key = f"Global:{username}"
+        summary = global_memory_cache.get(memory_key)
 
         if summary:
-            profiles.append(f"#### BYSTANDER (Numeric ID: {uid} | Username: {username})\n{summary.strip()}")
+            profiles.append(f"#### BYSTANDER (Username: {username} | Numeric ID: {uid})\n{summary.strip()}")
 
     return profiles
 
 def store_user_message(group_name, sender_id, username, display_name, message):
-    user_key = f"{group_name}:{sender_id}"
-    entry = {
+    user_key = f"{group_name}:{username}"
+    global_key = f"Global:{username}"
+    
+    local_entry = {
         "role": "user",
         "user_id": sender_id,
         "username": username,
@@ -371,12 +450,22 @@ def store_user_message(group_name, sender_id, username, display_name, message):
         "content": message,
         "timestamp": datetime.now(UTC).isoformat(),
     }
+
+    # Create a cloned entry for the global feed, tagged with the platform source
+    global_entry = local_entry.copy()
+    global_entry["content"] = f"[Sent via {group_name}] {message}"
+    
     try:
+        # 1. Save to the isolated group timeline
         history_col.update_one(
-            {"_id": user_key}, {"$push": {"messages": entry}}, upsert=True
+            {"_id": user_key}, {"$push": {"messages": local_entry}}, upsert=True
+        )
+        # 2. Save to the overarching global timeline
+        global_history_col.update_one(
+            {"_id": global_key}, {"$push": {"messages": global_entry}}, upsert=True
         )
     except PyMongoError as e:
-        logger.warning(f"Failed to store user message for {user_key}: {e}")
+        logger.warning(f"Failed to store user message: {e}")
 
 def store_group_message(group_name, sender_id, username, display_name, message):
     entry = {
@@ -467,6 +556,42 @@ def summarize_user_history(user_key, evolve=False):
         logger.warning(f"Evolution failed for {user_key}: {e}")
         return old_summary
 
+def summarize_global_history(global_key, evolve=False):
+    raw_history, _ = fetch_global_history(global_key, limit_messages=config.MAX_HISTORY_MESSAGES)
+    if not raw_history:
+        return None
+
+    old_summary = global_memory_cache.get(global_key)
+
+    # Hardcoded global prompts to save you from editing prompts.py
+    if old_summary is None:
+        sys_prompt = "Analyze these cross-platform messages and build a core behavioral and factual profile for this user. Ignore group-specific inside jokes; focus on their overarching personality, and long-term projects."
+        history_lines = [f"[User]: {m['content']}" for m in raw_history[-20:] if m.get("role") == "user"]
+    else:
+        if not evolve:
+            return old_summary
+        sys_prompt = f"Update the following global profile with new cross-platform observations.\nCURRENT PROFILE:\n{old_summary}\n\nFocus on permanent traits, overarching facts, and status updates to ongoing projects."
+        history_lines = [f"[User]: {m['content']}" for m in raw_history[-20:] if m.get("role") == "user"]
+
+    if not history_lines:
+        return old_summary
+
+    llm_feed = [
+        {"role": "system", "content": f"### GLOBAL OMNISCIENT PROMPT\n{sys_prompt}"},
+        {"role": "user", "content": f"### CROSS-PLATFORM HISTORY\n" + "\n".join(history_lines)}
+    ]
+
+    try:
+        new_summary = query_private_brain(llm_feed, temperature=0.7, max_output_tokens=1000)
+        if new_summary:
+            global_memory_cache.set(global_key, new_summary)
+            logger.info(f"Global profile updated for {global_key}")
+            return new_summary
+        return old_summary
+    except Exception as e:
+        logger.warning(f"Global evolution failed for {global_key}: {e}")
+        return old_summary
+    
 def summarize_group_history(group_name, raw_history):
     if not raw_history:
         return group_memory_cache.get(group_name)
@@ -513,7 +638,7 @@ def summarize_group_history(group_name, raw_history):
 # Core utilities
 def get_roast_response(group_name, sender_id, username, tagged_users=None):
     tagged_users = tagged_users or []
-    user_key = f"{group_name}:{sender_id}"
+    user_key = f"{group_name}:{username}"
     is_private_env = group_name in ["DefaultGroup", "Discord_DM"]
 
     _, trimmed_user = fetch_history(
@@ -540,11 +665,21 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
         "content": f"### ROAST PROMPT\n{system_content}"
     })
 
+    # 1. Fetch Local Group Profile
     user_memory = memory_cache.get(user_key)
     if user_memory:
         llm_feed.append({
             "role": "system", 
-            "content": f"### TARGET PROFILE (Numeric ID: {sender_id} | Username: {username})\n{user_memory.strip()}"
+            "content": f"### LOCAL GROUP PROFILE (How they act here)\n{user_memory.strip()}"
+        })
+
+    # 2. Fetch Global Cross-Platform Profile
+    global_key = f"Global:{username}"
+    global_memory = global_memory_cache.get(global_key)
+    if global_memory:
+        llm_feed.append({
+            "role": "system", 
+            "content": f"### GLOBAL OMNISCIENT PROFILE (Core facts across all platforms)\n{global_memory.strip()}"
         })
 
     if not is_private_env and group_memory:
@@ -667,7 +802,7 @@ def psi09():
             store_group_message(group_name, sender_id, username, display_name, user_message)
             store_user_message(group_name, sender_id, username, display_name, user_message)
 
-        user_key = f"{group_name}:{sender_id}"
+        user_key = f"{group_name}:{username}"
 
         with user_locks[user_key]:
             msg_count = memory_cache.increment(user_key)
@@ -682,6 +817,22 @@ def psi09():
                 logger.info(f"Initiating Evolution for {user_key}")
                 summarize_user_history(user_key, evolve=True)
                 memory_cache.reset_count(user_key)
+
+        # --- NEW GLOBAL EVOLUTION TRIGGER ---
+        global_key = f"Global:{username}"
+        with global_locks[global_key]:
+            global_msg_count = global_memory_cache.increment(global_key)
+            current_global_memory = global_memory_cache.get(global_key)
+            
+            if current_global_memory is None:
+                logger.info(f"Initiating First Contact (Global) for {global_key}")
+                summarize_global_history(global_key, evolve=False)
+                global_memory_cache.reset_count(global_key)
+                
+            elif global_msg_count >= config.EVOLVE_EVERY_N_MESSAGES:
+                logger.info(f"Initiating Evolution (Global) for {global_key}")
+                summarize_global_history(global_key, evolve=True)
+                global_memory_cache.reset_count(global_key)
 
         if not is_private:
             with group_locks[group_name]:
