@@ -438,7 +438,7 @@ def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
 
     return profiles
 
-def store_user_message(group_name, sender_id, username, display_name, message):
+def store_user_message(platform, group_name, sender_id, username, display_name, message):
     user_key = f"{group_name}:{username}"
     global_key = f"Global:{username}"
     
@@ -447,13 +447,14 @@ def store_user_message(group_name, sender_id, username, display_name, message):
         "user_id": sender_id,
         "username": username,
         "display_name": display_name,
+        "platform": platform,  # Storing explicitly for future-proofing
         "content": message,
         "timestamp": datetime.now(UTC).isoformat(),
     }
 
-    # Create a cloned entry for the global feed, tagged with the platform source
+    # Clean formatting: [Sent via Discord - DefaultGroup] 
     global_entry = local_entry.copy()
-    global_entry["content"] = f"[Sent via {group_name}] {message}"
+    global_entry["content"] = f"[Sent via {platform} - {group_name}] {message}"
     
     try:
         # 1. Save to the isolated group timeline
@@ -467,11 +468,12 @@ def store_user_message(group_name, sender_id, username, display_name, message):
     except PyMongoError as e:
         logger.warning(f"Failed to store user message: {e}")
 
-def store_group_message(group_name, sender_id, username, display_name, message):
+def store_group_message(platform, group_name, sender_id, username, display_name, message):
     entry = {
         "sender_id": sender_id,
         "username": username,
         "display_name": display_name,
+        "platform": platform, # Added here as well for consistency
         "content": message,
         "timestamp": datetime.now(UTC).isoformat(),
     }
@@ -780,8 +782,13 @@ def psi09():
         username = data.get("username")
         display_name = data.get("display_name") or username
         group_name = data.get("group_name") or "DefaultGroup"
+
+        if group_name.lower() in ["DefaultGroup", "Discord_DM", "MC_DM"]:
+            group_name = "private_chat"
+
         tagged_users = data.get("tagged_users", [])
         force_reply = data.get("force_reply", False)
+        platform = data.get("platform", "Unknown")
 
         if not username or not sender_id or not raw_message:
             return jsonify({"reply": ""}), 200
@@ -794,13 +801,13 @@ def psi09():
                 user_message,
             )
 
-        is_private = group_name in ["DefaultGroup", "Discord_DM"]
+        is_private = group_name in ["private_chat"]
 
         if is_private:
-            store_user_message(group_name, sender_id, username, display_name, user_message)
+            store_user_message(platform, group_name, sender_id, username, display_name, user_message)
         else:
-            store_group_message(group_name, sender_id, username, display_name, user_message)
-            store_user_message(group_name, sender_id, username, display_name, user_message)
+            store_group_message(platform, group_name, sender_id, username, display_name, user_message)
+            store_user_message(platform, group_name, sender_id, username, display_name, user_message)
 
         user_key = f"{group_name}:{username}"
 
