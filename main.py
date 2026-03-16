@@ -45,7 +45,7 @@ UTC = timezone.utc
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY") 
-    MODEL: str = "gemini-3.1-flash-lite-preview"
+    MODEL: str = "gemini-3-flash-preview"
     
     MAX_HISTORY_TOKENS: int = 1500
     MAX_HISTORY_MESSAGES: int = 30
