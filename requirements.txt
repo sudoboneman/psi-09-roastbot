@@ -6,4 +6,5 @@ tiktoken
 certifi
 gunicorn
 google-genai
+openai
 

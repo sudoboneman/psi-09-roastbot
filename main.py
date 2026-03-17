@@ -15,6 +15,7 @@ import sys
 
 from google import genai
 from google.genai import types
+from openai import OpenAI
 
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
@@ -60,19 +61,6 @@ class Config:
 
 config = Config()
 
-
-# Initialize Gemini Client
-try:
-    if config.GEMINI_API_KEY:
-        client = genai.Client(api_key=config.GEMINI_API_KEY)
-    else:
-        logger.error("GEMINI_API_KEY is missing. AI features will fail.")
-        client = None
-except Exception as e:
-    logger.error(f"Failed to initialize Gemini Client: {e}")
-    client = None
-
-
 # MongoDB
 mongo_client = MongoClient(
     config.MONGO_URI,
@@ -97,69 +85,59 @@ group_memory_col = db["group_memory"]
 global_history_col = db["global_history"]
 global_memory_col = db["global_memory"]
 
+# Initialize OpenAI Client
+try:
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+    if OPENAI_API_KEY:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+    else:
+        logger.error("OPENAI_API_KEY is missing. AI features will fail.")
+        client = None
+
+except Exception as e:
+    logger.error(f"Failed to initialize OpenAI Client: {e}")
+    client = None
 
 def query_private_brain(llm_feed, temperature, max_output_tokens):
     """
-    Connects to Google's Gemini API using the new google-genai SDK.
+    Connects to OpenAI GPT-4o-mini.
     """
     if not client:
         logger.error("Cannot query brain: Client not initialized.")
         return None
 
-    # 1. Parse System vs. User messages
-    system_parts = [msg["content"] for msg in llm_feed if msg["role"] == "system"]
-    prompt_parts = [msg["content"] for msg in llm_feed if msg["role"] != "system"]
-
-    system_instruction = "\n\n".join(system_parts)
-    final_prompt = "\n\n".join(prompt_parts)
-
-    # 2. Configure generation parameters
-    generate_config = types.GenerateContentConfig(
-        temperature=temperature,
-        max_output_tokens=max_output_tokens,
-        top_p=0.95,
-        top_k=40,
-        system_instruction=system_instruction,
-        safety_settings=[
-             types.SafetySetting(
-                 category="HARM_CATEGORY_HARASSMENT",
-                 threshold="BLOCK_NONE"
-             ),
-             types.SafetySetting(
-                 category="HARM_CATEGORY_HATE_SPEECH",
-                 threshold="BLOCK_NONE"
-             ),
-             types.SafetySetting(
-                 category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                 threshold="BLOCK_NONE"
-             ),
-             types.SafetySetting(
-                 category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                 threshold="BLOCK_NONE"
-             ),
-        ]
-    )
-
     try:
-        logger.info(f"Gemini Input (System len: {len(system_instruction)}, Prompt len: {len(final_prompt)})")
+        # Convert internal format to OpenAI message format
+        messages = []
+        for msg in llm_feed:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            messages.append({
+                "role": role,
+                "content": content
+            })
 
-        response = client.models.generate_content(
-            model=config.MODEL,
-            contents=final_prompt,
-            config=generate_config
+        logger.info(f"OpenAI Input Messages: {len(messages)}")
+
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_output_tokens,
         )
 
-        reply_text = response.text.strip()
+        reply_text = response.choices[0].message.content.strip()
         logger.info(f"Output: {reply_text}")
+
         return reply_text
-        
+
     except Exception as e:
-        logger.error(f"GEMINI CONNECTION ERROR: {e}")
+        logger.error(f"OPENAI CONNECTION ERROR: {e}")
         return None
 
 app = Flask(__name__)
 CORS(app)
-
 
 # Token encoding
 try:

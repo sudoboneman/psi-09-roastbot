@@ -12,7 +12,10 @@ import threading
 import time
 import logging
 import sys
-import requests
+
+from google import genai
+from google.genai import types
+
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from dataclasses import dataclass
@@ -22,13 +25,10 @@ from prompts import (
     GROUP_ROAST_PROMPT, 
     FIRST_CONTACT_PROMPT, 
     EVOLUTION_PROMPT, 
-    GROUP_SUMMARY_PROMPT,
-    STATUS_ROAST_PROMPT
+    GROUP_SUMMARY_PROMPT
 )
 
-# ---------------------------
 # Environment & Logging
-# ---------------------------
 load_dotenv()
 
 logging.basicConfig(
@@ -39,15 +39,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 UTC = timezone.utc
 
-# ---------------------------
+
 # Config
-# ---------------------------
 @dataclass
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
-    HF_TOKEN: str = os.getenv("HF_TOKEN") 
-    HF_ENDPOINT: str = os.getenv("HF_ENDPOINT") 
-    MODEL: str = "dolphin8b" 
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY") 
+    MODEL: str = "gemini-2.5-flash"
     
     MAX_HISTORY_TOKENS: int = 1500
     MAX_HISTORY_MESSAGES: int = 30
@@ -62,9 +60,20 @@ class Config:
 
 config = Config()
 
-# ---------------------------
+
+# Initialize Gemini Client
+try:
+    if config.GEMINI_API_KEY:
+        client = genai.Client(api_key=config.GEMINI_API_KEY)
+    else:
+        logger.error("GEMINI_API_KEY is missing. AI features will fail.")
+        client = None
+except Exception as e:
+    logger.error(f"Failed to initialize Gemini Client: {e}")
+    client = None
+
+
 # MongoDB
-# ---------------------------
 mongo_client = MongoClient(
     config.MONGO_URI,
     tlsCAFile=certifi.where(),
@@ -84,63 +93,82 @@ memory_col = db["user_memory"]
 group_history_col = db["group_history"]
 group_memory_col = db["group_memory"]
 
-# ---------------------------
-# Private Brain Connector
-# ---------------------------
-def query_private_brain(llm_feed, temperature, max_output_tokens):
-    headers = {
-        "Authorization": f"Bearer {config.HF_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "model": config.MODEL,
-        "messages": llm_feed,
-        "stream": False, 
-        "options": {
-            "temperature": temperature,
-            "num_predict": max_output_tokens, 
-            "top_k": 40,
-            "top_p": 0.9
-        }
-    }
+# --- NEW GLOBAL TABLES ---
+global_history_col = db["global_history"]
+global_memory_col = db["global_memory"]
 
-    logger.info(f"LLM Payload:\n{json.dumps(llm_feed, indent=2)}")
+
+def query_private_brain(llm_feed, temperature, max_output_tokens):
+    """
+    Connects to Google's Gemini API using the new google-genai SDK.
+    """
+    if not client:
+        logger.error("Cannot query brain: Client not initialized.")
+        return None
+
+    # 1. Parse System vs. User messages
+    system_parts = [msg["content"] for msg in llm_feed if msg["role"] == "system"]
+    prompt_parts = [msg["content"] for msg in llm_feed if msg["role"] != "system"]
+
+    system_instruction = "\n\n".join(system_parts)
+    final_prompt = "\n\n".join(prompt_parts)
+
+    # 2. Configure generation parameters
+    generate_config = types.GenerateContentConfig(
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        top_p=0.95,
+        top_k=40,
+        system_instruction=system_instruction,
+        safety_settings=[
+             types.SafetySetting(
+                 category="HARM_CATEGORY_HARASSMENT",
+                 threshold="BLOCK_NONE"
+             ),
+             types.SafetySetting(
+                 category="HARM_CATEGORY_HATE_SPEECH",
+                 threshold="BLOCK_NONE"
+             ),
+             types.SafetySetting(
+                 category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                 threshold="BLOCK_NONE"
+             ),
+             types.SafetySetting(
+                 category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                 threshold="BLOCK_NONE"
+             ),
+        ]
+    )
 
     try:
-        response = requests.post(
-            config.HF_ENDPOINT, 
-            json=payload, 
-            headers=headers, 
-            timeout=480 
-        )
-        response.raise_for_status()
-        
-        result = response.json()
-        reply_text = result.get("message", {}).get("content", "").strip()
+        logger.info(f"Gemini Input (System len: {len(system_instruction)}, Prompt len: {len(final_prompt)})")
 
+        response = client.models.generate_content(
+            model=config.MODEL,
+            contents=final_prompt,
+            config=generate_config
+        )
+
+        reply_text = response.text.strip()
         logger.info(f"Output: {reply_text}")
-        
         return reply_text
         
-    except requests.exceptions.RequestException as e:
-        logger.error(f"CORTEX CONNECTION ERROR: {e}")
+    except Exception as e:
+        logger.error(f"GEMINI CONNECTION ERROR: {e}")
         return None
 
 app = Flask(__name__)
 CORS(app)
 
-# ---------------------------
-# Token encoding (tiktoken)
-# ---------------------------
-try:
-    ENCODING = tiktoken.encoding_for_model(config.MODEL)
-except Exception:
-    ENCODING = tiktoken.get_encoding("cl100k_base")
 
-# ---------------------------
+# Token encoding
+try:
+    ENCODING = tiktoken.get_encoding("cl100k_base")
+except Exception:
+    ENCODING = tiktoken.get_encoding("gpt2")
+
+
 # Memory caches & Concurrency Locks
-# ---------------------------
 class MemoryCache:
     def __init__(self, ttl_seconds):
         self.cache = {}
@@ -247,13 +275,65 @@ class GroupMemoryCache:
 
 group_memory_cache = GroupMemoryCache(config.MEMORY_TTL)
 
-# Locks to guarantee sequential execution
+# --- NEW GLOBAL CACHE ---
+class GlobalMemoryCache:
+    def __init__(self, ttl_seconds):
+        self.cache = {}
+        self.expiry = {}
+        self.msg_count = defaultdict(int)
+        self.ttl = timedelta(seconds=ttl_seconds)
+        self.lock = threading.Lock()
+
+    def get(self, key):
+        now = datetime.now(UTC)
+        with self.lock:
+            if key in self.cache and self.expiry.get(key, now) > now:
+                return self.cache[key]
+
+        try:
+            doc = global_memory_col.find_one({"_id": key})
+            summary = doc.get("summary") if doc and doc.get("summary") else None
+        except PyMongoError as e:
+            logger.warning(f"Failed to load global memory for {key}: {e}")
+            summary = None
+
+        with self.lock:
+            self.cache[key] = summary
+            self.expiry[key] = now + self.ttl
+
+        return summary
+
+    def set(self, key, value):
+        now = datetime.now(UTC)
+        try:
+            global_memory_col.update_one(
+                {"_id": key},
+                {"$set": {"summary": value}},
+                upsert=True,
+            )
+        except PyMongoError as e:
+            logger.warning(f"Failed to persist global memory for {key}: {e}")
+
+        with self.lock:
+            self.cache[key] = value
+            self.expiry[key] = now + self.ttl
+
+    def increment(self, key):
+        with self.lock:
+            self.msg_count[key] += 1
+            return self.msg_count[key]
+
+    def reset_count(self, key):
+        with self.lock:
+            self.msg_count[key] = 0
+
+global_memory_cache = GlobalMemoryCache(config.MEMORY_TTL)
+
 user_locks = defaultdict(threading.Lock)
 group_locks = defaultdict(threading.Lock)
+global_locks = defaultdict(threading.Lock)
 
-# ---------------------------
-# Utilities: token counting and safe trimming
-# ---------------------------
+# Utilities
 def tokens_of(text: str) -> int:
     if not text:
         return 0
@@ -274,9 +354,6 @@ def trim_messages_to_token_budget(messages, max_tokens):
         total += t
     return trimmed
 
-# ---------------------------
-# History utilities
-# ---------------------------
 def fetch_history(user_key, limit_messages=None, max_input_tokens=None):
     limit_messages = limit_messages or config.MAX_HISTORY_MESSAGES
     try:
@@ -325,46 +402,78 @@ def fetch_group_history(group_name, limit_messages=None, max_input_tokens=None):
         return raw, trimmed
     return raw, raw
 
+def fetch_global_history(global_key, limit_messages=None, max_input_tokens=None):
+    limit_messages = limit_messages or config.MAX_HISTORY_MESSAGES
+    try:
+        doc = global_history_col.find_one(
+            {"_id": global_key}, {"messages": {"$slice": -limit_messages}}
+        )
+    except PyMongoError as e:
+        logger.warning(f"Failed to fetch global history for {global_key}: {e}")
+        return [], []
+
+    if not doc or "messages" not in doc:
+        return [], []
+
+    raw = doc["messages"]
+    if max_input_tokens:
+        trimmed = trim_messages_to_token_budget(raw, max_input_tokens)
+        return raw, trimmed
+    return raw, raw
+
 def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
     profiles = []
     for u in tagged_users[:max_targets]:
         uid = u.get("id")
-        username = u.get("username") or "Unknown"
+        username = u.get("username")
 
-        if not uid:
+        if not username:
             continue  
 
-        memory_key = f"{group_name}:{uid}"
-        summary = memory_cache.get(memory_key)
+        memory_key = f"Global:{username}"
+        summary = global_memory_cache.get(memory_key)
 
         if summary:
-            # Clean formatting for bystander blocks
-            profiles.append(f"#### BYSTANDER (Numeric ID: {uid} | Username: {username})\n{summary.strip()}")
+            profiles.append(f"#### BYSTANDER (Username: {username} | Numeric ID: {uid})\n{summary.strip()}")
 
     return profiles
 
-def store_user_message(group_name, sender_id, username, display_name, message):
-    user_key = f"{group_name}:{sender_id}"
-    entry = {
+def store_user_message(platform, group_name, sender_id, username, display_name, message):
+    user_key = f"{group_name}:{username}"
+    global_key = f"Global:{username}"
+    
+    local_entry = {
         "role": "user",
         "user_id": sender_id,
         "username": username,
         "display_name": display_name,
+        "platform": platform,  # Storing explicitly for future-proofing
         "content": message,
         "timestamp": datetime.now(UTC).isoformat(),
     }
+
+    # Clean formatting: [Sent via Discord - DefaultGroup] 
+    global_entry = local_entry.copy()
+    global_entry["content"] = f"[Sent via {platform} - {group_name}] {message}"
+    
     try:
+        # 1. Save to the isolated group timeline
         history_col.update_one(
-            {"_id": user_key}, {"$push": {"messages": entry}}, upsert=True
+            {"_id": user_key}, {"$push": {"messages": local_entry}}, upsert=True
+        )
+        # 2. Save to the overarching global timeline
+        global_history_col.update_one(
+            {"_id": global_key}, {"$push": {"messages": global_entry}}, upsert=True
         )
     except PyMongoError as e:
-        logger.warning(f"Failed to store user message for {user_key}: {e}")
+        logger.warning(f"Failed to store user message: {e}")
 
-def store_group_message(group_name, sender_id, username, display_name, message):
+def store_group_message(platform, group_name, sender_id, username, display_name, message):
     entry = {
         "sender_id": sender_id,
         "username": username,
         "display_name": display_name,
+        "platform": platform, # Added here as well for consistency
         "content": message,
         "timestamp": datetime.now(UTC).isoformat(),
     }
@@ -384,9 +493,15 @@ def store_group_message(group_name, sender_id, username, display_name, message):
     except PyMongoError as e:
         logger.warning(f"Failed to store group message for {group_name}: {e}")
 
-# ---------------------------
+def bot_mentioned_in(text: str) -> bool:
+    if not text or not config.DISCORD_ID:
+        return False
+
+    discord_pattern = r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">"
+    return re.search(discord_pattern, text) is not None
+
+
 # Summarization functions
-# ---------------------------
 def summarize_user_history(user_key, evolve=False):
     raw_history, _ = fetch_history(
         user_key,
@@ -398,14 +513,13 @@ def summarize_user_history(user_key, evolve=False):
 
     old_summary = memory_cache.get(user_key)
 
-    # Isolated First Contact Logic
     if old_summary is None:
         try:
             llm_feed = [
                 {"role": "system", "content": f"### FIRST CONTACT PROMPT\n{FIRST_CONTACT_PROMPT}"},
                 {"role": "user", "content": f"### CHAT HISTORY\n[User]: {raw_history[-1]['content']}"}
             ]
-            summary = query_private_brain(llm_feed, temperature=0.6, max_output_tokens=200)
+            summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=1000)
                 
             if summary:
                 memory_cache.set(user_key, summary)
@@ -419,7 +533,6 @@ def summarize_user_history(user_key, evolve=False):
     if not evolve:
         return old_summary
 
-    # Isolated Evolution Logic
     recent_user_msgs = [m["content"] for m in raw_history if m.get("role") == "user"][-15:]
 
     if not recent_user_msgs:
@@ -434,7 +547,7 @@ def summarize_user_history(user_key, evolve=False):
     ]
 
     try:
-        evolved = query_private_brain(llm_feed, temperature=0.7, max_output_tokens=200)
+        evolved = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=1000)
         
         if evolved:
             memory_cache.set(user_key, evolved)
@@ -445,6 +558,42 @@ def summarize_user_history(user_key, evolve=False):
         logger.warning(f"Evolution failed for {user_key}: {e}")
         return old_summary
 
+def summarize_global_history(global_key, evolve=False):
+    raw_history, _ = fetch_global_history(global_key, limit_messages=config.MAX_HISTORY_MESSAGES)
+    if not raw_history:
+        return None
+
+    old_summary = global_memory_cache.get(global_key)
+
+    # Hardcoded global prompts to save you from editing prompts.py
+    if old_summary is None:
+        sys_prompt = "Analyze these cross-platform messages and build a core behavioral and factual profile for this user. Focus on their overarching personality and facts. Keep it short and precise."
+        history_lines = [f"[User]: {m['content']}" for m in raw_history[-20:] if m.get("role") == "user"]
+    else:
+        if not evolve:
+            return old_summary
+        sys_prompt = f"Update the following global profile with new cross-platform observations.\nCURRENT PROFILE:\n{old_summary}\n\nFocus on permanent traits, overarching facts. Keep it short and precise."
+        history_lines = [f"[User]: {m['content']}" for m in raw_history[-20:] if m.get("role") == "user"]
+
+    if not history_lines:
+        return old_summary
+
+    llm_feed = [
+        {"role": "system", "content": f"### GLOBAL OMNISCIENT PROMPT\n{sys_prompt}"},
+        {"role": "user", "content": f"### CROSS-PLATFORM HISTORY\n" + "\n".join(history_lines)}
+    ]
+
+    try:
+        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=2000)
+        if new_summary:
+            global_memory_cache.set(global_key, new_summary)
+            logger.info(f"Global profile updated for {global_key}")
+            return new_summary
+        return old_summary
+    except Exception as e:
+        logger.warning(f"Global evolution failed for {global_key}: {e}")
+        return old_summary
+    
 def summarize_group_history(group_name, raw_history):
     if not raw_history:
         return group_memory_cache.get(group_name)
@@ -458,20 +607,15 @@ def summarize_group_history(group_name, raw_history):
 
     recent = []
     for m in raw_history[-25:]:
-        # 1. Look for all possible name keys to fix the 'unknown' bug
         sender = m.get("sender") or m.get("username") or m.get("display_name") or "unknown"
-        
-        # 2. Skip the bot entirely. We only want to summarize human dynamics.
         if sender == "PSI-09":
             continue
 
         content = m.get("content", "")
-
         if config.DISCORD_ID:
             content = re.sub(
                 r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content
             )
-
         recent.append(f"[{sender}]: {content}")
 
     llm_feed = [
@@ -480,7 +624,7 @@ def summarize_group_history(group_name, raw_history):
     ]
 
     try:
-        new_summary = query_private_brain(llm_feed, temperature=0.9, max_output_tokens=200)
+        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=2000)
     except Exception as e:
         logger.warning(f"Group summarization failed for {group_name}: {e}")
         new_summary = old_summary
@@ -493,23 +637,11 @@ def summarize_group_history(group_name, raw_history):
 
     return new_summary or old_summary
 
-# ---------------------------
-# Mention detection helper
-# ---------------------------
-def bot_mentioned_in(text: str) -> bool:
-    if not text or not config.DISCORD_ID:
-        return False
-
-    discord_pattern = r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">"
-    return re.search(discord_pattern, text) is not None
-
-# ---------------------------
-# Core roast generation with exact Dict Blocks
-# ---------------------------
+# Core utilities
 def get_roast_response(group_name, sender_id, username, tagged_users=None):
     tagged_users = tagged_users or []
-    user_key = f"{group_name}:{sender_id}"
-    is_private_env = group_name in ["DefaultGroup", "Discord_DM"]
+    user_key = f"{group_name}:{username}"
+    is_private_env = group_name in ["private_chat"]
 
     _, trimmed_user = fetch_history(
         user_key,
@@ -529,23 +661,27 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
 
     llm_feed = []
 
-    # ==========================================
-    # BLOCK 1: Roast Prompt
-    # ==========================================
     system_content = ROAST_PROMPT if is_private_env else GROUP_ROAST_PROMPT
     llm_feed.append({
         "role": "system", 
         "content": f"### ROAST PROMPT\n{system_content}"
     })
 
-    # ==========================================
-    # BLOCK 2: Target Profile & Group Summary
-    # ==========================================
+    # 1. Fetch Local Group Profile
     user_memory = memory_cache.get(user_key)
     if user_memory:
         llm_feed.append({
             "role": "system", 
-            "content": f"### TARGET PROFILE (Numeric ID: {sender_id} | Username: {username})\n{user_memory.strip()}"
+            "content": f"### LOCAL GROUP PROFILE (How they act here)\n{user_memory.strip()}"
+        })
+
+    # 2. Fetch Global Cross-Platform Profile
+    global_key = f"Global:{username}"
+    global_memory = global_memory_cache.get(global_key)
+    if global_memory:
+        llm_feed.append({
+            "role": "system", 
+            "content": f"### GLOBAL OMNISCIENT PROFILE (Core facts across all platforms)\n{global_memory.strip()}"
         })
 
     if not is_private_env and group_memory:
@@ -554,19 +690,13 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
             "content": f"### GROUP DYNAMIC SUMMARY\n{group_memory.strip()}"
         })
 
-    # ==========================================
-    # BLOCK 3: Bystander Profiles
-    # ==========================================
     tagged_profiles = fetch_tagged_profiles(group_name, tagged_users)
     if tagged_profiles:
         llm_feed.append({
             "role": "system", 
-            "content": f"### BYSTANDER PROFILES\n" + "\n\n".join(tagged_profiles)
+            "content": f"### TAGGED MEMBER PROFILES\n" + "\n\n".join(tagged_profiles)
         })
 
-    # ==========================================
-    # BLOCK 4: Chat History
-    # ==========================================
     history_lines = []
     
     if is_private_env:
@@ -585,10 +715,8 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
             for entry in last_20:
                 s = entry.get("sender") or entry.get("username") or entry.get("display_name") or "unknown"
                 c = entry.get("content", "").strip()
-                
                 if config.DISCORD_ID:
                     c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", c)
-
                 if c:
                     history_lines.append(f"[{s}]: {c}")
 
@@ -599,14 +727,11 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
         "content": f"### CHAT HISTORY\n{history_text}"
     })
 
-    # ==========================================
-    # Call the Brain
-    # ==========================================
     try:
         base_reply = query_private_brain(
             llm_feed=llm_feed,
             temperature=0.9, 
-            max_output_tokens=200
+            max_output_tokens=2000
         )
     except Exception as e:
         logger.error(f"AI Error: {e}")
@@ -620,9 +745,6 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
         logger.info(f"Empty or failed response for {user_key}. Skipping storage.")
         return ""
 
-    # ==========================================
-    # Store the Reply
-    # ==========================================
     user_entry = {
         "role": "assistant",
         "content": clean_reply,
@@ -647,9 +769,6 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
 
     return clean_reply
 
-# ---------------------------
-# Flask routes
-# ---------------------------
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({"status": "ok"}), 200
@@ -661,31 +780,15 @@ def psi09():
         raw_message = data.get("message", "")
         sender_id = data.get("sender_id")
         username = data.get("username")
-
-        if username and "WEBHOOK" in username.upper():
-            logger.warning(f"Blocked malicious webhook loop injection from {username}")
-            return jsonify({"reply": ""}), 200
-        
-        if username == "PSI09_STATUS" and raw_message == "status":
-            logger.info("Generating fresh WhatsApp status roast...")
-            
-            llm_feed = [
-                {"role": "system", "content": f"### STATUS ROAST PROMPT\n{STATUS_ROAST_PROMPT}"},
-                {"role": "user", "content": "### CHAT HISTORY\n[User]: Generate a new cynical status update for the humans."}
-            ]
-            
-            reply = query_private_brain(
-                llm_feed=llm_feed,
-                temperature=1.0,  
-                max_output_tokens=150
-            )
-            
-            clean_reply = re.sub(r"^PSI-09\s*:\s*", "", reply or "", flags=re.IGNORECASE).strip()
-            return jsonify({"reply": clean_reply}), 200
-
         display_name = data.get("display_name") or username
         group_name = data.get("group_name") or "DefaultGroup"
+
+        if group_name.lower() in ["defaultgroup", "discord_dm", "mc_dm"]:
+            group_name = "private_chat"
+
         tagged_users = data.get("tagged_users", [])
+        force_reply = data.get("force_reply", False)
+        platform = data.get("platform", "Unknown")
 
         if not username or not sender_id or not raw_message:
             return jsonify({"reply": ""}), 200
@@ -698,24 +801,16 @@ def psi09():
                 user_message,
             )
 
-        is_private = group_name in ["DefaultGroup", "Discord_DM"]
+        is_private = group_name in ["private_chat"]
 
-        # -------- STORE MESSAGE --------
         if is_private:
-            store_user_message(
-                group_name, sender_id, username, display_name, user_message
-            )
+            store_user_message(platform, group_name, sender_id, username, display_name, user_message)
         else:
-            store_group_message(
-                group_name, sender_id, username, display_name, user_message
-            )
-            store_user_message(
-                group_name, sender_id, username, display_name, user_message
-            )
+            store_group_message(platform, group_name, sender_id, username, display_name, user_message)
+            store_user_message(platform, group_name, sender_id, username, display_name, user_message)
 
-        user_key = f"{group_name}:{sender_id}"
+        user_key = f"{group_name}:{username}"
 
-        # -------- SEQUENTIAL FIRST CONTACT / EVOLUTION --------
         with user_locks[user_key]:
             msg_count = memory_cache.increment(user_key)
             current_user_memory = memory_cache.get(user_key)
@@ -730,7 +825,22 @@ def psi09():
                 summarize_user_history(user_key, evolve=True)
                 memory_cache.reset_count(user_key)
 
-        # -------- SEQUENTIAL GROUP MEMORY UPDATE --------
+        # --- NEW GLOBAL EVOLUTION TRIGGER ---
+        global_key = f"Global:{username}"
+        with global_locks[global_key]:
+            global_msg_count = global_memory_cache.increment(global_key)
+            current_global_memory = global_memory_cache.get(global_key)
+            
+            if current_global_memory is None:
+                logger.info(f"Initiating First Contact (Global) for {global_key}")
+                summarize_global_history(global_key, evolve=False)
+                global_memory_cache.reset_count(global_key)
+                
+            elif global_msg_count >= config.EVOLVE_EVERY_N_MESSAGES:
+                logger.info(f"Initiating Evolution (Global) for {global_key}")
+                summarize_global_history(global_key, evolve=True)
+                global_memory_cache.reset_count(global_key)
+
         if not is_private:
             with group_locks[group_name]:
                 group_msg_count = group_memory_cache.increment(group_name)
@@ -745,14 +855,8 @@ def psi09():
                     summarize_group_history(group_name, raw_group_hist)
                     group_memory_cache.reset_count(group_name)
 
-        # -------- REPLY LOGIC --------
-        if is_private or bot_mentioned_in(raw_message):
-            reply = get_roast_response(
-                group_name,
-                sender_id,
-                username,          
-                tagged_users,
-            )
+        if is_private or force_reply or bot_mentioned_in(raw_message):
+            reply = get_roast_response(group_name, sender_id, username, tagged_users)
             return jsonify({"reply": reply}), 200
 
         return jsonify({"reply": ""}), 200
@@ -761,9 +865,6 @@ def psi09():
         logger.exception(f"/psi09 failure: {e}")
         return jsonify({"reply": ""}), 500
 
-# ---------------------------
-# Mongo keepalive thread
-# ---------------------------
 def mongo_keepalive():
     while True:
         try:
@@ -774,9 +875,6 @@ def mongo_keepalive():
 
 threading.Thread(target=mongo_keepalive, daemon=True).start()
 
-# ---------------------------
-# Run
-# ---------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 7860)) 
     log = logging.getLogger("werkzeug")
