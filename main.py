@@ -118,8 +118,8 @@ def query_private_brain(llm_feed, temperature, max_output_tokens):
             model=config.MODEL,
             messages=llm_feed,
             temperature=temperature,
-            max_tokens=max_output_tokens,
-            top_p=0.95
+            max_completion_tokens=max_output_tokens,
+            top_p=1
         )
 
         reply_text = response.choices[0].message.content.strip()
