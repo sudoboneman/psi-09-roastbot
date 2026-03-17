@@ -120,7 +120,7 @@ def query_private_brain(llm_feed, temperature, max_output_tokens):
         logger.info(f"OpenAI Input Messages: {len(messages)}")
 
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-4o-mini",
             messages=messages,
             temperature=temperature,
             max_tokens=max_output_tokens,
