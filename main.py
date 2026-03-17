@@ -24,7 +24,9 @@ from prompts import (
     GROUP_ROAST_PROMPT, 
     FIRST_CONTACT_PROMPT, 
     EVOLUTION_PROMPT, 
-    GROUP_SUMMARY_PROMPT
+    GROUP_SUMMARY_PROMPT,
+    GLOBAL_FIRST_CONTACT_PROMPT,
+    GLOBAL_EVOLUTION_PROMPT      
 )
 
 # Environment & Logging
@@ -535,19 +537,18 @@ def summarize_global_history(global_key, evolve=False):
         return None
 
     old_summary = global_memory_cache.get(global_key)
+    history_lines = [f"[User]: {m['content']}" for m in raw_history[-20:] if m.get("role") == "user"]
+    
+    if not history_lines:
+        return old_summary
 
-    # Hardcoded global prompts to save you from editing prompts.py
     if old_summary is None:
-        sys_prompt = "Analyze these cross-platform messages and build a core behavioral and factual profile for this user. Focus on their overarching personality and facts. Keep it short and precise."
-        history_lines = [f"[User]: {m['content']}" for m in raw_history[-20:] if m.get("role") == "user"]
+        sys_prompt = GLOBAL_FIRST_CONTACT_PROMPT
     else:
         if not evolve:
             return old_summary
-        sys_prompt = f"Update the following global profile with new cross-platform observations.\nCURRENT PROFILE:\n{old_summary}\n\nFocus on permanent traits, overarching facts. Keep it short and precise."
-        history_lines = [f"[User]: {m['content']}" for m in raw_history[-20:] if m.get("role") == "user"]
-
-    if not history_lines:
-        return old_summary
+        # Inject the old summary into the new evolution prompt
+        sys_prompt = GLOBAL_EVOLUTION_PROMPT.format(old_summary=old_summary)
 
     llm_feed = [
         {"role": "system", "content": f"### GLOBAL OMNISCIENT PROMPT\n{sys_prompt}"},
@@ -702,7 +703,7 @@ def get_roast_response(group_name, sender_id, username, tagged_users=None):
         base_reply = query_private_brain(
             llm_feed=llm_feed,
             temperature=0.9, 
-            max_output_tokens=2000
+            max_output_tokens=800
         )
     except Exception as e:
         logger.error(f"AI Error: {e}")
