@@ -13,9 +13,7 @@ import time
 import logging
 import sys
 
-from google import genai
-from google.genai import types
-from openai import OpenAI
+from groq import Groq
 
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
@@ -45,7 +43,8 @@ UTC = timezone.utc
 @dataclass
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY") 
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY")
+    MODEL: str = "llama-3.3-70b-versatile"
     
     MAX_HISTORY_TOKENS: int = 1500
     MAX_HISTORY_MESSAGES: int = 30
@@ -59,6 +58,19 @@ class Config:
     GROUP_HISTORY_MAX_MESSAGES: int = 2000
 
 config = Config()
+
+
+# Initialize Groq Client
+try:
+    if config.GROQ_API_KEY:
+        client = Groq(api_key=config.GROQ_API_KEY)
+    else:
+        logger.error("GROQ_API_KEY is missing. AI features will fail.")
+        client = None
+except Exception as e:
+    logger.error(f"Failed to initialize Groq Client: {e}")
+    client = None
+
 
 # MongoDB
 mongo_client = MongoClient(
@@ -84,59 +96,41 @@ group_memory_col = db["group_memory"]
 global_history_col = db["global_history"]
 global_memory_col = db["global_memory"]
 
-# Initialize OpenAI Client
-try:
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-    if OPENAI_API_KEY:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-    else:
-        logger.error("OPENAI_API_KEY is missing. AI features will fail.")
-        client = None
-
-except Exception as e:
-    logger.error(f"Failed to initialize OpenAI Client: {e}")
-    client = None
 
 def query_private_brain(llm_feed, temperature, max_output_tokens):
     """
-    Connects to OpenAI GPT-4o-mini.
+    Connects to Groq API using the standard messages array.
     """
     if not client:
         logger.error("Cannot query brain: Client not initialized.")
         return None
 
     try:
-        # Convert internal format to OpenAI message format
-        messages = []
-        for msg in llm_feed:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            messages.append({
-                "role": role,
-                "content": content
-            })
+        # Just logging the lengths to keep your terminal output clean
+        system_len = sum(len(m["content"]) for m in llm_feed if m["role"] == "system")
+        prompt_len = sum(len(m["content"]) for m in llm_feed if m["role"] != "system")
+        logger.info(f"Groq Input (System len: {system_len}, Prompt len: {prompt_len})")
 
-        logger.info(f"OpenAI Input Messages: {len(messages)}")
-
+        # Groq takes your carefully built llm_feed perfectly as-is
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
+            model=config.MODEL,
+            messages=llm_feed,
             temperature=temperature,
             max_tokens=max_output_tokens,
+            top_p=0.95
         )
 
         reply_text = response.choices[0].message.content.strip()
         logger.info(f"Output: {reply_text}")
-
         return reply_text
-
+        
     except Exception as e:
-        logger.error(f"OPENAI CONNECTION ERROR: {e}")
+        logger.error(f"GROQ CONNECTION ERROR: {e}")
         return None
 
 app = Flask(__name__)
 CORS(app)
+
 
 # Token encoding
 try:
