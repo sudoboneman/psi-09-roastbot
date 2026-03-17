@@ -46,7 +46,7 @@ UTC = timezone.utc
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY")
-    MODEL: str = "openai/gpt-oss-120b"
+    MODEL: str = "moonshotai/kimi-k2-instruct-0905"
     
     MAX_HISTORY_TOKENS: int = 1500
     MAX_HISTORY_MESSAGES: int = 30
@@ -119,7 +119,6 @@ def query_private_brain(llm_feed, temperature, max_output_tokens):
             messages=llm_feed,
             temperature=temperature,
             max_completion_tokens=max_output_tokens,
-            reasoning_effort="high",
             top_p=1
         )
 
