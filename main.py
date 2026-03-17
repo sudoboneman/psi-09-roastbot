@@ -46,7 +46,7 @@ UTC = timezone.utc
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY")
-    MODEL: str = "llama-3.3-70b-versatile"
+    MODEL: str = "openai/gpt-oss-120b"
     
     MAX_HISTORY_TOKENS: int = 1500
     MAX_HISTORY_MESSAGES: int = 30
@@ -119,6 +119,7 @@ def query_private_brain(llm_feed, temperature, max_output_tokens):
             messages=llm_feed,
             temperature=temperature,
             max_completion_tokens=max_output_tokens,
+            reasoning_effort="high",
             top_p=1
         )
 
@@ -467,11 +468,20 @@ def store_group_message(platform, group_name, sender_id, username, display_name,
         logger.warning(f"Failed to store group message for {group_name}: {e}")
 
 def bot_mentioned_in(text: str) -> bool:
-    if not text or not config.DISCORD_ID:
+    if not text:
         return False
 
-    discord_pattern = r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">"
-    return re.search(discord_pattern, text) is not None
+    # 1. Check for literal plain-text mention (case-insensitive)
+    if re.search(r"@psi-09", text, flags=re.IGNORECASE):
+        return True
+
+    # 2. Check for Discord numeric ID tag (only if configured)
+    if config.DISCORD_ID:
+        discord_pattern = r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">"
+        if re.search(discord_pattern, text):
+            return True
+
+    return False
 
 
 # Summarization functions
