@@ -45,7 +45,7 @@ UTC = timezone.utc
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY") 
-    MODEL: str = "gemini-3-flash-preview"
+    MODEL: str = "gemini-2.5-flash"
     
     MAX_HISTORY_TOKENS: int = 1500
     MAX_HISTORY_MESSAGES: int = 30
@@ -567,12 +567,12 @@ def summarize_global_history(global_key, evolve=False):
 
     # Hardcoded global prompts to save you from editing prompts.py
     if old_summary is None:
-        sys_prompt = "Analyze these cross-platform messages and build a core behavioral and factual profile for this user. Ignore group-specific inside jokes; focus on their overarching personality, and long-term projects."
+        sys_prompt = "Analyze these cross-platform messages and build a core behavioral and factual profile for this user. Focus on their overarching personality and facts. Keep it short and precise."
         history_lines = [f"[User]: {m['content']}" for m in raw_history[-20:] if m.get("role") == "user"]
     else:
         if not evolve:
             return old_summary
-        sys_prompt = f"Update the following global profile with new cross-platform observations.\nCURRENT PROFILE:\n{old_summary}\n\nFocus on permanent traits, overarching facts, and status updates to ongoing projects."
+        sys_prompt = f"Update the following global profile with new cross-platform observations.\nCURRENT PROFILE:\n{old_summary}\n\nFocus on permanent traits, overarching facts. Keep it short and precise."
         history_lines = [f"[User]: {m['content']}" for m in raw_history[-20:] if m.get("role") == "user"]
 
     if not history_lines:
@@ -584,7 +584,7 @@ def summarize_global_history(global_key, evolve=False):
     ]
 
     try:
-        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=3000)
+        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=2000)
         if new_summary:
             global_memory_cache.set(global_key, new_summary)
             logger.info(f"Global profile updated for {global_key}")
@@ -624,7 +624,7 @@ def summarize_group_history(group_name, raw_history):
     ]
 
     try:
-        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=3000)
+        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=2000)
     except Exception as e:
         logger.warning(f"Group summarization failed for {group_name}: {e}")
         new_summary = old_summary
