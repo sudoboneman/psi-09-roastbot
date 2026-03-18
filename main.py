@@ -46,7 +46,8 @@ UTC = timezone.utc
 @dataclass
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
-    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY")
+    GROQ_API_KEY_1: str = os.getenv("GROQ_API_KEY_1")
+    GROQ_API_KEY_2: str = os.getenv("GROQ_API_KEY_2")
     MODEL: str = "moonshotai/kimi-k2-instruct-0905"
     
     MAX_HISTORY_TOKENS: int = 1500
@@ -63,16 +64,17 @@ class Config:
 config = Config()
 
 
-# Initialize Groq Client
-try:
-    if config.GROQ_API_KEY:
-        client = Groq(api_key=config.GROQ_API_KEY)
-    else:
-        logger.error("GROQ_API_KEY is missing. AI features will fail.")
-        client = None
-except Exception as e:
-    logger.error(f"Failed to initialize Groq Client: {e}")
-    client = None
+# Initialize Groq Clients
+client_1 = None
+if config.GROQ_API_KEY_1:
+    client_1 = Groq(api_key=config.GROQ_API_KEY_1)
+
+client_2 = None
+if config.GROQ_API_KEY_2:
+    client_2 = Groq(api_key=config.GROQ_API_KEY_2)
+else:
+    logger.warning("No second API key found. Falling back to Key 1 for all tasks.")
+    client_2 = client_1
 
 
 # MongoDB
@@ -100,12 +102,18 @@ global_history_col = db["global_history"]
 global_memory_col = db["global_memory"]
 
 
-def query_private_brain(llm_feed, temperature, max_output_tokens, max_retries=4):
+def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roast", max_retries=4):
     """
     Connects to API with Exponential Backoff for Rate Limits (429s).
     """
-    if not client:
-        logger.error("Cannot query brain: Client not initialized.")
+    # Route to client 1 (First Contact / Roasts) or client 2 (Evolution / Group Summaries)
+    if task_type in ["first_contact", "roast"]:
+        active_client = client_1
+    else:
+        active_client = client_2
+
+    if not active_client:
+        logger.error(f"Cannot query brain: Client for '{task_type}' not initialized.")
         return None
 
     # Just logging the lengths to keep your terminal output clean
@@ -118,7 +126,7 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, max_retries=4)
     for attempt in range(max_retries):
         try:
             # Groq takes your carefully built llm_feed perfectly as-is
-            response = client.chat.completions.create(
+            response = active_client.chat.completions.create(
                 model=config.MODEL,
                 messages=llm_feed,
                 temperature=temperature,
@@ -520,7 +528,7 @@ def summarize_user_history(user_key, evolve=False):
                 {"role": "system", "content": f"### FIRST CONTACT PROMPT\n{FIRST_CONTACT_PROMPT}"},
                 {"role": "user", "content": f"### CHAT HISTORY\n[User]: {raw_history[-1]['content']}"}
             ]
-            summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=1000)
+            summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=1000, task_type="first_contact")
                 
             if summary:
                 memory_cache.set(user_key, summary)
@@ -548,7 +556,7 @@ def summarize_user_history(user_key, evolve=False):
     ]
 
     try:
-        evolved = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=1000)
+        evolved = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=1000, task_type="evolution")
         
         if evolved:
             memory_cache.set(user_key, evolved)
@@ -584,7 +592,8 @@ def summarize_global_history(global_key, evolve=False):
     ]
 
     try:
-        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=2000)
+        current_task = "evolution" if evolve else "first_contact"
+        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=2000, task_type=current_task)
         if new_summary:
             global_memory_cache.set(global_key, new_summary)
             logger.info(f"Global profile updated for {global_key}")
@@ -624,7 +633,7 @@ def summarize_group_history(group_name, raw_history):
     ]
 
     try:
-        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=2000)
+        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=2000, task_type="group_summary")
     except Exception as e:
         logger.warning(f"Group summarization failed for {group_name}: {e}")
         new_summary = old_summary
