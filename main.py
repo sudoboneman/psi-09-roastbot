@@ -12,6 +12,7 @@ import threading
 import time
 import logging
 import sys
+import random
 
 from groq import Groq
 
@@ -99,36 +100,54 @@ global_history_col = db["global_history"]
 global_memory_col = db["global_memory"]
 
 
-def query_private_brain(llm_feed, temperature, max_output_tokens):
+def query_private_brain(llm_feed, temperature, max_output_tokens, max_retries=4):
     """
-    Connects to Groq API using the standard messages array.
+    Connects to API with Exponential Backoff for Rate Limits (429s).
     """
     if not client:
         logger.error("Cannot query brain: Client not initialized.")
         return None
 
-    try:
-        # Just logging the lengths to keep your terminal output clean
-        system_len = sum(len(m["content"]) for m in llm_feed if m["role"] == "system")
-        prompt_len = sum(len(m["content"]) for m in llm_feed if m["role"] != "system")
-        logger.info(f"Groq Input (System len: {system_len}, Prompt len: {prompt_len})")
+    # Just logging the lengths to keep your terminal output clean
+    system_len = sum(len(m.get("content", "")) for m in llm_feed if m.get("role") == "system")
+    prompt_len = sum(len(m.get("content", "")) for m in llm_feed if m.get("role") != "system")
+    logger.info(f"Groq Input (System len: {system_len}, Prompt len: {prompt_len})")
 
-        # Groq takes your carefully built llm_feed perfectly as-is
-        response = client.chat.completions.create(
-            model=config.MODEL,
-            messages=llm_feed,
-            temperature=temperature,
-            max_completion_tokens=max_output_tokens,
-            top_p=1
-        )
+    base_delay = 2.0  # Start with a 2-second delay
 
-        reply_text = response.choices[0].message.content.strip()
-        logger.info(f"Output: {reply_text}")
-        return reply_text
-        
-    except Exception as e:
-        logger.error(f"GROQ CONNECTION ERROR: {e}")
-        return None
+    for attempt in range(max_retries):
+        try:
+            # Groq takes your carefully built llm_feed perfectly as-is
+            response = client.chat.completions.create(
+                model=config.MODEL,
+                messages=llm_feed,
+                temperature=temperature,
+                max_completion_tokens=max_output_tokens,
+                top_p=1
+            )
+
+            reply_text = response.choices[0].message.content.strip()
+            logger.info(f"Output: {reply_text}")
+            return reply_text
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # If it's the last attempt, fail out gracefully
+            if attempt == max_retries - 1:
+                logger.error(f"GROQ FATAL ERROR (After {max_retries} attempts): {e}")
+                return None
+            
+            # Check if the error is a Rate Limit (429) or Server/Connection Error (500, 502, 503)
+            if "429" in error_msg or "rate limit" in error_msg or "50" in error_msg or "connection" in error_msg:
+                # Calculate exponential backoff: 2s, 4s, 8s + random jitter
+                sleep_time = (base_delay * (2 ** attempt)) + random.uniform(0.1, 1.5)
+                logger.warning(f"API Error ({e}). Retrying in {sleep_time:.2f} seconds... (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(sleep_time)
+            else:
+                # If it's a 400 Bad Request or 401 Auth error, don't waste time retrying
+                logger.error(f"Non-retriable GROQ ERROR: {e}")
+                return None
 
 app = Flask(__name__)
 CORS(app)
