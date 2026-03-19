@@ -106,7 +106,7 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
     """
     Connects to API with Exponential Backoff for Rate Limits (429s).
     """
-    active_client = client_1 if task_type in ["first_contact", "roast"] else client_2
+    active_client = client_1 if task_type in ["first_contact"] else client_2
 
     if not active_client:
         logger.error(f"Cannot query brain: Client for '{task_type}' not initialized.")
