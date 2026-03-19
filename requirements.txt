@@ -2,8 +2,7 @@ flask
 flask-cors
 python-dotenv
 pymongo
-tiktoken
 certifi
 gunicorn
 groq
-
+transformers
