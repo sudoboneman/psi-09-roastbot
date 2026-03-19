@@ -55,12 +55,12 @@ class Config:
     
     # DATABASE CEILINGS (Keep these high for memory)
     GROUP_HISTORY_MAX_MESSAGES: int = 100000 
-    GROUP_HISTORY_SLICE: int = 250 # Fast database read
+    GROUP_HISTORY_SLICE: int = 100 # Fast database read
     
     # LLM PAYLOAD CEILINGS (Shrunk to maximize API calls/min)
-    MAX_HISTORY_MESSAGES: int = 30 # Down from 30
-    MAX_HISTORY_TOKENS: int = 800 # Tightly caps the user's personal history
-    GROUP_HISTORY_TOKEN_LIMIT: int = 1600 # Tightly caps the group's history
+    MAX_HISTORY_MESSAGES: int = 15 # Down from 30
+    MAX_HISTORY_TOKENS: int = 400 # Tightly caps the user's personal history
+    GROUP_HISTORY_TOKEN_LIMIT: int = 800 # Tightly caps the group's history
     
     # THE PACING ENGINE (Tuned for 6b6t Anarchy traffic)
     EVOLVE_EVERY_N_MESSAGES: int = 100 # Evolve active users frequently
@@ -365,46 +365,6 @@ def summarize_user_history(user_key, evolve=False):
     except Exception as e:
         logger.warning(f"Local profile task '{current_task}' failed for {user_key}: {e}")
         return old_summary
-
-def summarize_global_history(global_key, evolve=False):
-    _, trimmed_history = fetch_history(
-        global_history_col, global_key, config.MAX_HISTORY_MESSAGES, config.MAX_HISTORY_TOKENS
-    )
-    
-    if not trimmed_history:
-        return None
-
-    old_summary = global_memory_cache.get(global_key)
-    history_lines = [f"[User]: {m['content']}" for m in trimmed_history if m.get("role") == "user"]
-    
-    if not history_lines:
-        return old_summary
-
-    if old_summary is None:
-        sys_prompt = GLOBAL_FIRST_CONTACT_PROMPT
-        user_content = f"### CHAT HISTORY\n[User]: {trimmed_history[-1]['content']}"
-    else:
-        if not evolve:
-            return old_summary
-        sys_prompt = GLOBAL_EVOLUTION_PROMPT.format(old_summary=old_summary)
-        user_content = f"### CROSS-PLATFORM HISTORY\n" + "\n".join(history_lines)
-
-    llm_feed = [
-        {"role": "system", "content": f"### GLOBAL OMNISCIENT PROMPT\n{sys_prompt}"},
-        {"role": "user", "content": user_content}
-    ]
-
-    try:
-        current_task = "evolution" if old_summary else "first_contact"
-        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=300, task_type=current_task)
-        if new_summary:
-            global_memory_cache.set(global_key, new_summary)
-            logger.info(f"Global profile updated for {global_key} ({current_task})")
-            return new_summary
-        return old_summary
-    except Exception as e:
-        logger.warning(f"Global evolution failed for {global_key}: {e}")
-        return old_summary
     
 def summarize_group_history(group_name):
     _, trimmed_history = fetch_history(
@@ -447,6 +407,46 @@ def summarize_group_history(group_name):
         group_memory_cache.set(group_name, new_summary)
 
     return new_summary or old_summary
+
+def summarize_global_history(global_key, evolve=False):
+    _, trimmed_history = fetch_history(
+        global_history_col, global_key, config.MAX_HISTORY_MESSAGES, config.MAX_HISTORY_TOKENS
+    )
+    
+    if not trimmed_history:
+        return None
+
+    old_summary = global_memory_cache.get(global_key)
+    history_lines = [f"[User]: {m['content']}" for m in trimmed_history if m.get("role") == "user"]
+    
+    if not history_lines:
+        return old_summary
+
+    if old_summary is None:
+        sys_prompt = GLOBAL_FIRST_CONTACT_PROMPT
+        user_content = f"### CHAT HISTORY\n[User]: {trimmed_history[-1]['content']}"
+    else:
+        if not evolve:
+            return old_summary
+        sys_prompt = GLOBAL_EVOLUTION_PROMPT.format(old_summary=old_summary)
+        user_content = f"### CROSS-PLATFORM HISTORY\n" + "\n".join(history_lines)
+
+    llm_feed = [
+        {"role": "system", "content": f"### GLOBAL OMNISCIENT PROMPT\n{sys_prompt}"},
+        {"role": "user", "content": user_content}
+    ]
+
+    try:
+        current_task = "evolution" if old_summary else "first_contact"
+        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=300, task_type=current_task)
+        if new_summary:
+            global_memory_cache.set(global_key, new_summary)
+            logger.info(f"Global profile updated for {global_key} ({current_task})")
+            return new_summary
+        return old_summary
+    except Exception as e:
+        logger.warning(f"Global evolution failed for {global_key}: {e}")
+        return old_summary
 
 # --- COMBAT ENGINE (Roasts) ---
 def get_roast_response(group_name, username, tagged_users=None):
