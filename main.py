@@ -64,7 +64,7 @@ class Config:
     
     # THE PACING ENGINE (Tuned for 6b6t Anarchy traffic)
     EVOLVE_EVERY_N_MESSAGES: int = 200 # Evolve active users frequently
-    GROUP_SUMMARY_EVERY_N: int = 500 # Rapidly update the group dynamic
+    GROUP_SUMMARY_EVERY_N: int = 800 # Rapidly update the group dynamic
 
 config = Config()
 
