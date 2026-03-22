@@ -11,6 +11,7 @@ import time
 import logging
 import sys
 import random
+import tiktoken
 
 from transformers import AutoTokenizer
 from groq import Groq
@@ -46,7 +47,7 @@ class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     GROQ_API_KEY_1: str = os.getenv("GROQ_API_KEY_1") # First Contact & Roasts
     GROQ_API_KEY_2: str = os.getenv("GROQ_API_KEY_2") # Evolution & Group Summaries
-    MODEL: str = "moonshotai/kimi-k2-instruct-0905"
+    MODEL: str = "llama-3.1-8b-instant"
     
     # --- TIGHTENED FOR MAXIMUM THROUGHPUT ---
     BOT_NUMBER: str = os.getenv("BOT_NUMBER")
@@ -148,10 +149,20 @@ app = Flask(__name__)
 CORS(app)
 
 try:
-    ENCODING = AutoTokenizer.from_pretrained("moonshotai/Kimi-K2-Instruct", trust_remote_code=True)
+    TIKTOKEN_ENCODING = tiktoken.get_encoding("cl100k_base")
 except Exception as e:
-    logger.warning(f"Failed to load Kimi tokenizer, falling back to basic split: {e}")
-    ENCODING = None
+    logger.warning(f"Failed to load tiktoken: {e}")
+    TIKTOKEN_ENCODING = None
+
+# 2. Conditionally load Kimi's massive tokenizer ONLY if it is the active model
+KIMI_ENCODING = None
+if "kimi" in config.MODEL.lower() or "moonshot" in config.MODEL.lower():
+    try:
+        logger.info("Kimi model detected. Loading custom 160k tokenizer from Hugging Face...")
+        KIMI_ENCODING = AutoTokenizer.from_pretrained("moonshotai/Kimi-K2-Instruct", trust_remote_code=True)
+        logger.info("Kimi tokenizer loaded successfully.")
+    except Exception as e:
+        logger.warning(f"Failed to load Kimi tokenizer, will rely on fallback: {e}")
 
 # --- UNIFIED CACHE CLASS (Saves ~90 lines) ---
 class MongoCache:
@@ -210,8 +221,24 @@ global_locks = defaultdict(threading.Lock)
 def tokens_of(text: str) -> int:
     if not text:
         return 0
-    if ENCODING:
-        return len(ENCODING.encode(text))
+        
+    is_kimi = "kimi" in config.MODEL.lower() or "moonshot" in config.MODEL.lower()
+    is_llama = "llama" in config.MODEL.lower()
+
+    # Route A: Kimi Exact Math
+    if is_kimi and KIMI_ENCODING:
+        return len(KIMI_ENCODING.encode(text))
+        
+    # Route B: Llama Safety Math (using tiktoken)
+    if is_llama and TIKTOKEN_ENCODING:
+        # Llama 3 uses more tokens than OpenAI to say the exact same thing.
+        return int(len(TIKTOKEN_ENCODING.encode(text)) * 1.15)
+        
+    # Route C: Clean Fallback (if model name is weird but tiktoken works)
+    if TIKTOKEN_ENCODING:
+        return int(len(TIKTOKEN_ENCODING.encode(text)) * 1.15) # Play it safe
+
+    # Route D: Absolute Disaster Fallback (If both libraries fail to load)
     return int(len(text.split()) * 1.5)
 
 def trim_messages_to_token_budget(messages, max_tokens):
