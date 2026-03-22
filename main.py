@@ -279,7 +279,8 @@ def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
         memory_key = f"Global:{username}"
         summary = global_memory_cache.get(memory_key)
         if summary:
-            profiles.append(f"#### BYSTANDER (Username: {username} | Numeric ID: {uid})\n{summary.strip()}")
+            # Replaced markdown header with an XML block
+            profiles.append(f'<bystander username="{username}" numeric_id="{uid}">\n{summary.strip()}\n</bystander>')
     return profiles
 
 # --- DATABASE STORAGE ---
@@ -361,15 +362,15 @@ def summarize_user_history(user_key, evolve=False):
 
     if old_summary is None:
         sys_prompt = FIRST_CONTACT_PROMPT
-        user_content = f"### CHAT HISTORY\n[User]: {trimmed_history[-1]['content']}"
+        user_content = f"<chat_history>\n[User]: {trimmed_history[-1]['content']}\n</chat_history>"
     else:
         if not evolve:
             return old_summary
         sys_prompt = EVOLUTION_PROMPT.format(old_summary=old_summary)
-        user_content = f"### CHAT HISTORY\n" + "\n".join(history_lines)
+        user_content = f"<chat_history>\n" + "\n".join(history_lines) + "\n</chat_history>"
 
     llm_feed = [
-        {"role": "system", "content": f"### PROFILE ENGINE PROMPT\n{sys_prompt}"},
+        {"role": "system", "content": f"<profile_engine_prompt>\n{sys_prompt}\n</profile_engine_prompt>"},
         {"role": "user", "content": user_content}
     ]
 
@@ -414,8 +415,8 @@ def summarize_group_history(group_name):
         recent.append(f"[{sender}]: {content}")
 
     llm_feed = [
-        {"role": "system", "content": f"### GROUP SUMMARY PROMPT\n{GROUP_SUMMARY_PROMPT}"},
-        {"role": "user", "content": f"### CHAT HISTORY\n" + "\n".join(recent)}
+        {"role": "system", "content": f"<group_summary_prompt>\n{GROUP_SUMMARY_PROMPT}\n</group_summary_prompt>"},
+        {"role": "user", "content": f"<chat_history>\n" + "\n".join(recent) + "\n</chat_history>"}
     ]
 
     try:
@@ -445,15 +446,15 @@ def summarize_global_history(global_key, evolve=False):
 
     if old_summary is None:
         sys_prompt = GLOBAL_FIRST_CONTACT_PROMPT
-        user_content = f"### CHAT HISTORY\n[User]: {trimmed_history[-1]['content']}"
+        user_content = f"<cross_platform_history>\n[User]: {trimmed_history[-1]['content']}\n</cross_platform_history>"
     else:
         if not evolve:
             return old_summary
         sys_prompt = GLOBAL_EVOLUTION_PROMPT.format(old_summary=old_summary)
-        user_content = f"### CROSS-PLATFORM HISTORY\n" + "\n".join(history_lines)
+        user_content = f"<cross_platform_history>\n" + "\n".join(history_lines) + "\n</cross_platform_history>"
 
     llm_feed = [
-        {"role": "system", "content": f"### GLOBAL OMNISCIENT PROMPT\n{sys_prompt}"},
+        {"role": "system", "content": f"<global_omniscient_prompt>\n{sys_prompt}\n</global_omniscient_prompt>"},
         {"role": "user", "content": user_content}
     ]
 
@@ -490,23 +491,24 @@ def get_roast_response(group_name, username, tagged_users=None):
     llm_feed = []
 
     system_content = ROAST_PROMPT if is_private_env else GROUP_ROAST_PROMPT
-    llm_feed.append({"role": "system", "content": f"### ROAST PROMPT\n{system_content}"})
+    llm_feed.append({"role": "system", "content": f"<roast_prompt>\n{system_content}\n</roast_prompt>"})
 
     user_memory = memory_cache.get(user_key)
     if user_memory:
-        llm_feed.append({"role": "system", "content": f"### LOCAL GROUP PROFILE (How they act here)\n{user_memory.strip()}"})
+        llm_feed.append({"role": "system", "content": f"<local_group_profile>\n{user_memory.strip()}\n</local_group_profile>"})
 
     global_key = f"Global:{username}"
     global_memory = global_memory_cache.get(global_key)
     if global_memory:
-        llm_feed.append({"role": "system", "content": f"### GLOBAL OMNISCIENT PROFILE (Core facts across all platforms)\n{global_memory.strip()}"})
+        llm_feed.append({"role": "system", "content": f"<global_omniscient_profile>\n{global_memory.strip()}\n</global_omniscient_profile>"})
 
     if not is_private_env and group_memory:
-        llm_feed.append({"role": "system", "content": f"### GROUP DYNAMIC SUMMARY\n{group_memory.strip()}"})
+        llm_feed.append({"role": "system", "content": f"<group_dynamic_summary>\n{group_memory.strip()}\n</group_dynamic_summary>"})
 
     tagged_profiles = fetch_tagged_profiles(group_name, tagged_users)
     if tagged_profiles:
-        llm_feed.append({"role": "system", "content": f"### TAGGED MEMBER PROFILES\n" + "\n\n".join(tagged_profiles)})
+        joined_profiles = "\n\n".join(tagged_profiles)
+        llm_feed.append({"role": "system", "content": f"<tagged_member_profiles>\n{joined_profiles}\n</tagged_member_profiles>"})
 
     history_lines = []
     
@@ -532,7 +534,21 @@ def get_roast_response(group_name, username, tagged_users=None):
 
     history_text = "\n".join(history_lines) if history_lines else "[No recent history]"
     
-    llm_feed.append({"role": "user", "content": f"### CHAT HISTORY\n{history_text}"})
+    # --- TARGET MESSAGE ISOLATION ---
+    target_message = ""
+    if is_private_env and trimmed_user:
+        target_message = trimmed_user[-1].get("content", "")
+    elif not is_private_env and trimmed_group:
+        target_message = trimmed_group[-1].get("content", "")
+
+    # Feed both the history context AND the isolated target wrapped in XML
+    llm_feed.append({
+        "role": "user", 
+        "content": (
+            f"<chat_history>\n{history_text}\n</chat_history>\n\n"
+            f"<target_message>\n{target_message}\n</target_message>"
+        )
+    })
 
     try:
         base_reply = query_private_brain(llm_feed=llm_feed, temperature=0.9, max_output_tokens=150, task_type="roast")
