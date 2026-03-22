@@ -47,7 +47,7 @@ class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     GROQ_API_KEY_1: str = os.getenv("GROQ_API_KEY_1") # First Contact & Roasts
     GROQ_API_KEY_2: str = os.getenv("GROQ_API_KEY_2") # Evolution & Group Summaries
-    MODEL: str = "llama-3.1-8b-instant"
+    MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"
     
     # --- TIGHTENED FOR MAXIMUM THROUGHPUT ---
     BOT_NUMBER: str = os.getenv("BOT_NUMBER")
