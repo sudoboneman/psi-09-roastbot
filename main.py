@@ -11,7 +11,6 @@ import time
 import logging
 import sys
 import random
-import tiktoken
 
 from transformers import AutoTokenizer
 from groq import Groq
@@ -47,7 +46,7 @@ class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     GROQ_API_KEY_1: str = os.getenv("GROQ_API_KEY_1") # First Contact & Roasts
     GROQ_API_KEY_2: str = os.getenv("GROQ_API_KEY_2") # Evolution & Group Summaries
-    MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+    MODEL: str = "moonshotai/kimi-k2-instruct-0905"
     
     # --- TIGHTENED FOR MAXIMUM THROUGHPUT ---
     BOT_NUMBER: str = os.getenv("BOT_NUMBER")
@@ -161,7 +160,7 @@ LLAMA_ENCODING = None
 if "llama" in config.MODEL.lower():
     try:
         # Using the ungated Unsloth repo to bypass the 401 Unauthorized error
-        LLAMA_ENCODING = AutoTokenizer.from_pretrained("unsloth/Meta-Llama-3.1-8B-Instruct")
+        LLAMA_ENCODING = AutoTokenizer.from_pretrained("unsloth/Llama-4-Scout-17B-16E-Instruct")
     except Exception as e:
         logger.warning(f"Failed to load Llama tokenizer: {e}")
 
