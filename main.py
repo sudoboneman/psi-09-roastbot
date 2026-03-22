@@ -148,21 +148,39 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
 app = Flask(__name__)
 CORS(app)
 
-try:
-    TIKTOKEN_ENCODING = tiktoken.get_encoding("cl100k_base")
-except Exception as e:
-    logger.warning(f"Failed to load tiktoken: {e}")
-    TIKTOKEN_ENCODING = None
-
-# 2. Conditionally load Kimi's massive tokenizer ONLY if it is the active model
+# 1. Load Kimi's Tokenizer (If Kimi is active)
 KIMI_ENCODING = None
 if "kimi" in config.MODEL.lower() or "moonshot" in config.MODEL.lower():
     try:
-        logger.info("Kimi model detected. Loading custom 160k tokenizer from Hugging Face...")
         KIMI_ENCODING = AutoTokenizer.from_pretrained("moonshotai/Kimi-K2-Instruct", trust_remote_code=True)
-        logger.info("Kimi tokenizer loaded successfully.")
     except Exception as e:
-        logger.warning(f"Failed to load Kimi tokenizer, will rely on fallback: {e}")
+        logger.warning(f"Failed to load Kimi tokenizer: {e}")
+
+# 2. Load Exact Llama Tokenizer (If Llama is active)
+LLAMA_ENCODING = None
+if "llama" in config.MODEL.lower():
+    try:
+        # Using the ungated Unsloth repo to bypass the 401 Unauthorized error
+        LLAMA_ENCODING = AutoTokenizer.from_pretrained("unsloth/Meta-Llama-3.1-8B-Instruct")
+    except Exception as e:
+        logger.warning(f"Failed to load Llama tokenizer: {e}")
+
+# 3. The precise routing engine
+def tokens_of(text: str) -> int:
+    if not text:
+        return 0
+        
+    is_kimi = "kimi" in config.MODEL.lower() or "moonshot" in config.MODEL.lower()
+    is_llama = "llama" in config.MODEL.lower()
+
+    if is_kimi and KIMI_ENCODING:
+        return len(KIMI_ENCODING.encode(text))
+        
+    if is_llama and LLAMA_ENCODING:
+        return len(LLAMA_ENCODING.encode(text))
+        
+    # Absolute Fallback
+    return int(len(text.split()) * 1.5)
 
 # --- UNIFIED CACHE CLASS (Saves ~90 lines) ---
 class MongoCache:
@@ -218,29 +236,6 @@ group_locks = defaultdict(threading.Lock)
 global_locks = defaultdict(threading.Lock)
 
 # --- UNIFIED UTILITIES ---
-def tokens_of(text: str) -> int:
-    if not text:
-        return 0
-        
-    is_kimi = "kimi" in config.MODEL.lower() or "moonshot" in config.MODEL.lower()
-    is_llama = "llama" in config.MODEL.lower()
-
-    # Route A: Kimi Exact Math
-    if is_kimi and KIMI_ENCODING:
-        return len(KIMI_ENCODING.encode(text))
-        
-    # Route B: Llama Safety Math (using tiktoken)
-    if is_llama and TIKTOKEN_ENCODING:
-        # Llama 3 uses more tokens than OpenAI to say the exact same thing.
-        return int(len(TIKTOKEN_ENCODING.encode(text)) * 1.15)
-        
-    # Route C: Clean Fallback (if model name is weird but tiktoken works)
-    if TIKTOKEN_ENCODING:
-        return int(len(TIKTOKEN_ENCODING.encode(text)) * 1.15) # Play it safe
-
-    # Route D: Absolute Disaster Fallback (If both libraries fail to load)
-    return int(len(text.split()) * 1.5)
-
 def trim_messages_to_token_budget(messages, max_tokens):
     """FIXED SOFT FAULT 2: Now measures the exact formatted string the LLM sees"""
     total = 0
