@@ -52,7 +52,7 @@ class Config:
     MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
         "moonshotai/kimi-k2-instruct",
         "moonshotai/kimi-k2-instruct-0905",
-        "llama-3.3-70b-versatile"
+        ##"llama-3.3-70b-versatile"
     ])
     
     # --- TIGHTENED FOR MAXIMUM THROUGHPUT ---
