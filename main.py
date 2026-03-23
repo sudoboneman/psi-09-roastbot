@@ -12,6 +12,7 @@ import logging
 import sys
 import random
 
+from huggingface_hub import login
 from transformers import AutoTokenizer
 from groq import Groq
 
@@ -31,6 +32,9 @@ from prompts import (
 
 # Environment & Logging
 load_dotenv()
+
+if os.getenv("HF_TOKEN"):
+    login(token=os.getenv("HF_TOKEN"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -74,7 +78,7 @@ class Config:
     
     # THE PACING ENGINE (Tuned for 6b6t Anarchy traffic)
     EVOLVE_EVERY_N_MESSAGES: int = 50 # Evolve active users frequently
-    GROUP_SUMMARY_EVERY_N: int = 100 # Rapidly update the group dynamic
+    GROUP_SUMMARY_EVERY_N: int = 200 # Rapidly update the group dynamic
 
 config = Config()
 

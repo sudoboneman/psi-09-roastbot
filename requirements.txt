@@ -7,3 +7,4 @@ gunicorn
 groq
 tiktoken
 transformers
+huggingface_hub
