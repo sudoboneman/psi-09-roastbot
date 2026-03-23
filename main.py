@@ -172,7 +172,7 @@ CORS(app)
 
 # 1. Load Kimi's Tokenizer (If Kimi is active)
 KIMI_ENCODING = None
-if "kimi" in config.MODEL.lower():
+if "kimi" in config.MODELS.lower():
     try:
         KIMI_ENCODING = AutoTokenizer.from_pretrained("moonshotai/Kimi-K2-Instruct", trust_remote_code=True)
     except Exception as e:
@@ -180,7 +180,7 @@ if "kimi" in config.MODEL.lower():
 
 # 2. Load Exact Llama Tokenizer (If Llama is active)
 LLAMA_ENCODING = None
-if "llama" in config.MODEL.lower():
+if "llama" in config.MODELS.lower():
     try:
         # Using the ungated Unsloth repo to bypass the 401 Unauthorized error
         LLAMA_ENCODING = AutoTokenizer.from_pretrained("unsloth/Llama-4-Scout-17B-16E-Instruct")
