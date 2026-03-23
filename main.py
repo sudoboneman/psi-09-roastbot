@@ -46,7 +46,13 @@ class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
     GROQ_API_KEY_1: str = os.getenv("GROQ_API_KEY_1") # First Contact & Roasts
     GROQ_API_KEY_2: str = os.getenv("GROQ_API_KEY_2") # Evolution & Group Summaries
-    MODEL: str = "moonshotai/kimi-k2-instruct"
+    
+    # --- PERSISTENT MODEL CYCLE ---
+    # The bot will stay on index 0 until it dies, then permanently move to index 1, and so on.
+    MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
+        "moonshotai/kimi-k2-instruct",
+        "moonshotai/kimi-k2-instruct-0905"
+    ])
     
     # --- TIGHTENED FOR MAXIMUM THROUGHPUT ---
     BOT_NUMBER: str = os.getenv("BOT_NUMBER")
@@ -67,6 +73,10 @@ class Config:
     GROUP_SUMMARY_EVERY_N: int = 800 # Rapidly update the group dynamic
 
 config = Config()
+
+# --- PERSISTENT MODEL TRACKER ---
+model_lock = threading.Lock()
+active_model_index = 0
 
 # Initialize Groq Clients
 client_1 = None
@@ -104,31 +114,30 @@ global_memory_col = db["global_memory"]
 
 def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roast", max_retries=4):
     """
-    Connects to API with Exponential Backoff for Rate Limits (429s).
+    Connects to API. If a rate limit is hit, permanently switches the active model 
+    for all future requests until the next limit is hit.
     """
+    global active_model_index
+    
     active_client = client_1 if task_type in ["first_contact"] else client_2
 
     if not active_client:
         logger.error(f"Cannot query brain: Client for '{task_type}' not initialized.")
-        return None
-
-    system_len = sum(len(m.get("content", "")) for m in llm_feed if m.get("role") == "system")
-    prompt_len = sum(len(m.get("content", "")) for m in llm_feed if m.get("role") != "system")
-    logger.info(f"Groq Input (Task: {task_type} | Sys: {system_len}, Prompt: {prompt_len})")
-
-    base_delay = 2.0  
+        return None 
 
     for attempt in range(max_retries):
+        # Always fetch whatever model is currently globally active
+        current_model = config.MODELS[active_model_index]
+        
         try:
             response = active_client.chat.completions.create(
-                model=config.MODEL,
+                model=current_model,
                 messages=llm_feed,
                 temperature=temperature,
                 max_completion_tokens=max_output_tokens,
                 top_p=1
             )
-            reply_text = response.choices[0].message.content.strip()
-            return reply_text
+            return response.choices[0].message.content.strip()
             
         except Exception as e:
             error_msg = str(e).lower()
@@ -136,10 +145,24 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
                 logger.error(f"GROQ FATAL ERROR (After {max_retries} attempts): {e}")
                 return None
             
-            if "429" in error_msg or "rate limit" in error_msg or "50" in error_msg or "connection" in error_msg:
-                sleep_time = (base_delay * (2 ** attempt)) + random.uniform(0.1, 1.5)
-                logger.warning(f"API Error ({e}). Retrying in {sleep_time:.2f} seconds... (Attempt {attempt + 1}/{max_retries})")
-                time.sleep(sleep_time)
+            # Catch Rate Limits and Token Exhaustion
+            if "429" in error_msg or "rate limit" in error_msg or "token" in error_msg or "50" in error_msg:
+                with model_lock:
+                    # SAFETY CHECK: Make sure another simultaneous thread hasn't already rotated it
+                    if config.MODELS[active_model_index] == current_model:
+                        
+                        # Move to the next model in the list (and loop back to 0 if at the end)
+                        active_model_index = (active_model_index + 1) % len(config.MODELS)
+                        new_model = config.MODELS[active_model_index]
+                        
+                        logger.warning(f"[{task_type}] {current_model} exhausted. PERSISTENT SWITCH to {new_model}.")
+                    else:
+                        # Another thread already handled the rotation, just grab the new model
+                        new_model = config.MODELS[active_model_index]
+                        logger.info(f"[{task_type}] Model already rotated by another thread to {new_model}.")
+
+                # Ultra-fast pause so Groq registers the new model properly
+                time.sleep(random.uniform(0.2, 0.5))
             else:
                 logger.error(f"Non-retriable GROQ ERROR: {e}")
                 return None
@@ -149,7 +172,7 @@ CORS(app)
 
 # 1. Load Kimi's Tokenizer (If Kimi is active)
 KIMI_ENCODING = None
-if "kimi" in config.MODEL.lower() or "moonshot" in config.MODEL.lower():
+if "kimi" in config.MODEL.lower():
     try:
         KIMI_ENCODING = AutoTokenizer.from_pretrained("moonshotai/Kimi-K2-Instruct", trust_remote_code=True)
     except Exception as e:
@@ -169,8 +192,11 @@ def tokens_of(text: str) -> int:
     if not text:
         return 0
         
-    is_kimi = "kimi" in config.MODEL.lower() or "moonshot" in config.MODEL.lower()
-    is_llama = "llama" in config.MODEL.lower()
+    global active_model_index
+    current_active_model = config.MODELS[active_model_index].lower()
+    
+    is_kimi = "kimi" in current_active_model
+    is_llama = "llama" in current_active_model
 
     if is_kimi and KIMI_ENCODING:
         return len(KIMI_ENCODING.encode(text))
@@ -178,7 +204,6 @@ def tokens_of(text: str) -> int:
     if is_llama and LLAMA_ENCODING:
         return len(LLAMA_ENCODING.encode(text))
         
-    # Absolute Fallback
     return int(len(text.split()) * 1.5)
 
 # --- UNIFIED CACHE CLASS (Saves ~90 lines) ---
