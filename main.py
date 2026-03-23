@@ -52,7 +52,7 @@ class Config:
     MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
         "moonshotai/kimi-k2-instruct",
         "moonshotai/kimi-k2-instruct-0905",
-        "meta-llama/llama-4-scout-17b-16e-instruct"
+        "llama-3.3-70b-versatile"
     ])
     
     # --- TIGHTENED FOR MAXIMUM THROUGHPUT ---
@@ -186,7 +186,7 @@ LLAMA_ENCODING = None
 if any("llama" in m.lower() for m in config.MODELS):
     try:
         # Using the ungated Unsloth repo to bypass the 401 Unauthorized error
-        LLAMA_ENCODING = AutoTokenizer.from_pretrained("unsloth/Llama-4-Scout-17B-16E-Instruct")
+        LLAMA_ENCODING = AutoTokenizer.from_pretrained("unsloth/Llama-3.3-70B-Instruct", trust_remote_code=True)
     except Exception as e:
         logger.warning(f"Failed to load Llama tokenizer: {e}")
 
