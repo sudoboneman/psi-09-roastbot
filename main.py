@@ -170,17 +170,17 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
 app = Flask(__name__)
 CORS(app)
 
-# 1. Load Kimi's Tokenizer (If Kimi is active)
+# 1. Load Kimi's Tokenizer (If Kimi is in the rotation)
 KIMI_ENCODING = None
-if "kimi" in config.MODELS.lower():
+if any("kimi" in m.lower() for m in config.MODELS):
     try:
         KIMI_ENCODING = AutoTokenizer.from_pretrained("moonshotai/Kimi-K2-Instruct", trust_remote_code=True)
     except Exception as e:
         logger.warning(f"Failed to load Kimi tokenizer: {e}")
 
-# 2. Load Exact Llama Tokenizer (If Llama is active)
+# 2. Load Exact Llama Tokenizer (If Llama is in the rotation)
 LLAMA_ENCODING = None
-if "llama" in config.MODELS.lower():
+if any("llama" in m.lower() for m in config.MODELS):
     try:
         # Using the ungated Unsloth repo to bypass the 401 Unauthorized error
         LLAMA_ENCODING = AutoTokenizer.from_pretrained("unsloth/Llama-4-Scout-17B-16E-Instruct")
