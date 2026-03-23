@@ -136,7 +136,9 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
                 messages=llm_feed,
                 temperature=temperature,
                 max_completion_tokens=max_output_tokens,
-                top_p=1
+                top_p=1,
+                frequency_penalty=0.8,
+                presence_penalty=0.6
             )
             return response.choices[0].message.content.strip()
             
