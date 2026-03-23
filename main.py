@@ -54,7 +54,7 @@ class Config:
     MEMORY_TTL: int = 500
     
     # DATABASE CEILINGS (Keep these high for memory)
-    GROUP_HISTORY_MAX_MESSAGES: int = 10000 
+    GROUP_HISTORY_MAX_MESSAGES: int = 50000 
     GROUP_HISTORY_SLICE: int = 100 # Fast database read
     
     # LLM PAYLOAD CEILINGS (Shrunk to maximize API calls/min)
