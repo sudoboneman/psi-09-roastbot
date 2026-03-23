@@ -146,7 +146,7 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
                 return None
             
             # Catch Rate Limits and Token Exhaustion
-            if "429" in error_msg or "rate limit" in error_msg or "token" in error_msg or "50" in error_msg:
+            if "429" in error_msg or "rate limit" in error_msg or "token" in error_msg:
                 with model_lock:
                     # SAFETY CHECK: Make sure another simultaneous thread hasn't already rotated it
                     if config.MODELS[active_model_index] == current_model:
