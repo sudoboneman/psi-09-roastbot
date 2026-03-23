@@ -44,15 +44,18 @@ UTC = timezone.utc
 @dataclass
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
-    GROQ_API_KEY_1: str = os.getenv("GROQ_API_KEY_1") # First Contact & Roasts
-    GROQ_API_KEY_2: str = os.getenv("GROQ_API_KEY_2") # Evolution & Group Summaries
+    GROQ_API_KEY_1: str = os.getenv("GROQ_API_KEY_1") # Roasts ONLY
+    GROQ_API_KEY_2: str = os.getenv("GROQ_API_KEY_2") # Background Tasks ONLY
     
-    # --- PERSISTENT MODEL CYCLE ---
-    # The bot will stay on index 0 until it dies, then permanently move to index 1, and so on.
-    MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
+    # --- DUAL PERSISTENT MODEL CYCLES ---
+    ROAST_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
         "moonshotai/kimi-k2-instruct",
-        "moonshotai/kimi-k2-instruct-0905",
-        ##"llama-3.3-70b-versatile"
+        "moonshotai/kimi-k2-instruct-0905"
+    ])
+    
+    BACKGROUND_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
+        "llama-3.3-70b-versatile",
+        "meta-llama/llama-4-scout-17b-16e-instruct" 
     ])
     
     # --- TIGHTENED FOR MAXIMUM THROUGHPUT ---
@@ -61,7 +64,7 @@ class Config:
     MEMORY_TTL: int = 500
     
     # DATABASE CEILINGS (Keep these high for memory)
-    GROUP_HISTORY_MAX_MESSAGES: int = 50000 
+    GROUP_HISTORY_MAX_MESSAGES: int = 50000  #
     GROUP_HISTORY_SLICE: int = 100 # Fast database read
     
     # LLM PAYLOAD CEILINGS (Shrunk to maximize API calls/min)
@@ -71,13 +74,16 @@ class Config:
     
     # THE PACING ENGINE (Tuned for 6b6t Anarchy traffic)
     EVOLVE_EVERY_N_MESSAGES: int = 50 # Evolve active users frequently
-    GROUP_SUMMARY_EVERY_N: int = 800 # Rapidly update the group dynamic
+    GROUP_SUMMARY_EVERY_N: int = 100 # Rapidly update the group dynamic
 
 config = Config()
 
-# --- PERSISTENT MODEL TRACKER ---
-model_lock = threading.Lock()
-active_model_index = 0
+# --- DUAL STATE TRACKERS ---
+roast_model_lock = threading.Lock()
+active_roast_index = 0
+
+bg_model_lock = threading.Lock()
+active_bg_index = 0
 
 # Initialize Groq Clients
 client_1 = None
@@ -115,20 +121,29 @@ global_memory_col = db["global_memory"]
 
 def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roast", max_retries=4):
     """
-    Connects to API. If a rate limit is hit, permanently switches the active model 
-    for all future requests until the next limit is hit.
+    Dual-Brain Architecture. 
+    - Routes Roasts to Key 1 (Kimi), Backgrounds to Key 2 (Llama).
+    - Maintains separate persistent round-robin loops for both.
     """
-    global active_model_index
+    global active_roast_index, active_bg_index
     
-    active_client = client_1 if task_type in ["first_contact"] else client_2
+    is_roast = (task_type == "roast")
+    
+    # Route to the correct client, list, and thread lock based on task
+    active_client = client_1 if is_roast else client_2
+    active_list = config.ROAST_MODELS if is_roast else config.BACKGROUND_MODELS
+    active_lock = roast_model_lock if is_roast else bg_model_lock
 
     if not active_client:
-        logger.error(f"Cannot query brain: Client for '{task_type}' not initialized.")
+        logger.error(f"Cannot query brain: Client not initialized.")
         return None 
+    
+    base_delay = 1.0 # Used for server overload pauses
 
     for attempt in range(max_retries):
-        # Always fetch whatever model is currently globally active
-        current_model = config.MODELS[active_model_index]
+        # Fetch the currently active model from the correct pool
+        current_index = active_roast_index if is_roast else active_bg_index
+        current_model = active_list[current_index]
         
         try:
             response = active_client.chat.completions.create(
@@ -137,8 +152,9 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
                 temperature=temperature,
                 max_completion_tokens=max_output_tokens,
                 top_p=1,
-                frequency_penalty=1.5,
-                presence_penalty=1.3
+                # High penalty for roasts, low penalty for clinical background summaries
+                frequency_penalty=1.5 if is_roast else 0.6,
+                presence_penalty=1.3 if is_roast else 0.6
             )
             return response.choices[0].message.content.strip()
             
@@ -148,24 +164,29 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
                 logger.error(f"GROQ FATAL ERROR (After {max_retries} attempts): {e}")
                 return None
             
-            # Catch Rate Limits and Token Exhaustion
-            if "429" in error_msg or "rate limit" in error_msg or "token" in error_msg or "50" in error_msg:
-                with model_lock:
-                    # SAFETY CHECK: Make sure another simultaneous thread hasn't already rotated it
-                    if config.MODELS[active_model_index] == current_model:
+            # PATH A: Token Exhaustion (Rotate the specific pool)
+            if "429" in error_msg or "rate limit" in error_msg or "token" in error_msg:
+                with active_lock:
+                    check_index = active_roast_index if is_roast else active_bg_index
+                    if active_list[check_index] == current_model:
                         
-                        # Move to the next model in the list (and loop back to 0 if at the end)
-                        active_model_index = (active_model_index + 1) % len(config.MODELS)
-                        new_model = config.MODELS[active_model_index]
+                        new_index = (check_index + 1) % len(active_list)
+                        if is_roast: active_roast_index = new_index
+                        else: active_bg_index = new_index
                         
-                        logger.warning(f"[{task_type}] {current_model} exhausted. PERSISTENT SWITCH to {new_model}.")
+                        logger.warning(f"[{task_type}] {current_model} exhausted. SWITCHING to {active_list[new_index]}.")
                     else:
-                        # Another thread already handled the rotation, just grab the new model
-                        new_model = config.MODELS[active_model_index]
-                        logger.info(f"[{task_type}] Model already rotated by another thread to {new_model}.")
-
-                # Ultra-fast pause so Groq registers the new model properly
+                        logger.info(f"[{task_type}] Model already rotated by another thread.")
+                
                 time.sleep(random.uniform(0.2, 0.5))
+
+            # PATH B: Server Overload (Pause without rotating)
+            elif "500" in error_msg or "502" in error_msg or "503" in error_msg or "504" in error_msg or "connection" in error_msg:
+                sleep_time = (base_delay * (2 ** attempt)) + random.uniform(0.1, 1.0)
+                logger.warning(f"[{task_type}] Groq Server Overload ({e}). Backing off for {sleep_time:.2f}s... (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(sleep_time)
+
+            # PATH C: Unknown Fatal Error (Abort)
             else:
                 logger.error(f"Non-retriable GROQ ERROR: {e}")
                 return None
@@ -173,32 +194,37 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
 app = Flask(__name__)
 CORS(app)
 
-# 1. Load Kimi's Tokenizer (If Kimi is in the rotation)
+# --- LOADERS FIX: Check both lists for tokenizers ---
+all_models = config.ROAST_MODELS + config.BACKGROUND_MODELS
+
 KIMI_ENCODING = None
-if any("kimi" in m.lower() for m in config.MODELS):
+if any("kimi" in m.lower() or "moonshot" in m.lower() for m in all_models):
     try:
         KIMI_ENCODING = AutoTokenizer.from_pretrained("moonshotai/Kimi-K2-Instruct", trust_remote_code=True)
     except Exception as e:
         logger.warning(f"Failed to load Kimi tokenizer: {e}")
 
-# 2. Load Exact Llama Tokenizer (If Llama is in the rotation)
 LLAMA_ENCODING = None
-if any("llama" in m.lower() for m in config.MODELS):
+if any("llama" in m.lower() for m in all_models):
     try:
-        # Using the ungated Unsloth repo to bypass the 401 Unauthorized error
-        LLAMA_ENCODING = AutoTokenizer.from_pretrained("unsloth/Llama-3.3-70B-Instruct", trust_remote_code=True)
+        LLAMA_ENCODING = AutoTokenizer.from_pretrained("unsloth/Llama-4-Scout-17B-16E-Instruct", trust_remote_code=True)
     except Exception as e:
         logger.warning(f"Failed to load Llama tokenizer: {e}")
 
 # 3. The precise routing engine
-def tokens_of(text: str) -> int:
+def tokens_of(text: str, task_type: str = "roast") -> int:
     if not text:
         return 0
         
-    global active_model_index
-    current_active_model = config.MODELS[active_model_index].lower()
+    global active_roast_index, active_bg_index
     
-    is_kimi = "kimi" in current_active_model
+    # Peek at the correct active model based on the task
+    if task_type == "roast":
+        current_active_model = config.ROAST_MODELS[active_roast_index].lower()
+    else:
+        current_active_model = config.BACKGROUND_MODELS[active_bg_index].lower()
+    
+    is_kimi = "kimi" in current_active_model or "moonshot" in current_active_model
     is_llama = "llama" in current_active_model
 
     if is_kimi and KIMI_ENCODING:
@@ -263,14 +289,13 @@ group_locks = defaultdict(threading.Lock)
 global_locks = defaultdict(threading.Lock)
 
 # --- UNIFIED UTILITIES ---
-def trim_messages_to_token_budget(messages, max_tokens):
-    """FIXED SOFT FAULT 2: Now measures the exact formatted string the LLM sees"""
+def trim_messages_to_token_budget(messages, max_tokens, task_type="roast"):
     total = 0
     trimmed = []
     for m in reversed(messages):
         sender = m.get("sender") or m.get("username") or m.get("display_name") or m.get("role") or "User"
         formatted_text = f"[{sender}]: {m.get('content', '')}"
-        t = tokens_of(formatted_text)
+        t = tokens_of(formatted_text, task_type) 
         
         if total + t > max_tokens:
             break
@@ -278,8 +303,7 @@ def trim_messages_to_token_budget(messages, max_tokens):
         total += t
     return trimmed
 
-def fetch_history(collection, doc_id, limit_messages, max_input_tokens=None):
-    """UNIFIED FETCHER: Replaces the 3 redundant fetchers (Saves ~30 lines)"""
+def fetch_history(collection, doc_id, limit_messages, max_input_tokens=None, task_type="roast"):
     try:
         doc = collection.find_one(
             {"_id": doc_id}, {"messages": {"$slice": -limit_messages}}
@@ -293,7 +317,7 @@ def fetch_history(collection, doc_id, limit_messages, max_input_tokens=None):
 
     raw = doc["messages"]
     if max_input_tokens:
-        trimmed = trim_messages_to_token_budget(raw, max_input_tokens)
+        trimmed = trim_messages_to_token_budget(raw, max_input_tokens, task_type)
         return raw, trimmed
     return raw, raw
 
@@ -307,7 +331,6 @@ def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
         memory_key = f"Global:{username}"
         summary = global_memory_cache.get(memory_key)
         if summary:
-            # Replaced markdown header with an XML block
             profiles.append(f'<bystander username="{username}" numeric_id="{uid}">\n{summary.strip()}\n</bystander>')
     return profiles
 
@@ -330,7 +353,6 @@ def store_user_message(platform, group_name, sender_id, username, display_name, 
     global_entry["content"] = f"[Sent via {platform} - {group_name}] {message}"
     
     try:
-        # FIXED SOFT FAULT 1: Applied $slice to stop infinite DB growth
         history_col.update_one(
             {"_id": user_key}, 
             {"$push": {"messages": {"$each": [local_entry], "$slice": -config.GROUP_HISTORY_MAX_MESSAGES}}}, 
@@ -375,14 +397,16 @@ def bot_mentioned_in(text: str) -> bool:
 
 # --- SUMMARIZATION ENGINES ---
 def summarize_user_history(user_key, evolve=False):
+    old_summary = memory_cache.get(user_key)
+    current_task = "evolution" if old_summary and evolve else "first_contact"
+
     _, trimmed_history = fetch_history(
-        history_col, user_key, config.MAX_HISTORY_MESSAGES, config.MAX_HISTORY_TOKENS 
+        history_col, user_key, config.MAX_HISTORY_MESSAGES, config.MAX_HISTORY_TOKENS, task_type=current_task
     )
 
     if not trimmed_history:
         return None
 
-    old_summary = memory_cache.get(user_key)
     history_lines = [f"[User]: {m['content']}" for m in trimmed_history if m.get("role") == "user"]
     
     if not history_lines:
@@ -403,7 +427,6 @@ def summarize_user_history(user_key, evolve=False):
     ]
 
     try:
-        current_task = "evolution" if old_summary else "first_contact"
         new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=300, task_type=current_task)
         
         if new_summary:
@@ -418,7 +441,7 @@ def summarize_user_history(user_key, evolve=False):
     
 def summarize_group_history(group_name):
     _, trimmed_history = fetch_history(
-        group_history_col, group_name, config.GROUP_HISTORY_SLICE, config.GROUP_HISTORY_TOKEN_LIMIT
+        group_history_col, group_name, config.GROUP_HISTORY_SLICE, config.GROUP_HISTORY_TOKEN_LIMIT, task_type="group_summary"
     )
 
     if not trimmed_history:
@@ -459,14 +482,16 @@ def summarize_group_history(group_name):
     return new_summary or old_summary
 
 def summarize_global_history(global_key, evolve=False):
+    old_summary = global_memory_cache.get(global_key)
+    current_task = "evolution" if old_summary and evolve else "first_contact"
+
     _, trimmed_history = fetch_history(
-        global_history_col, global_key, config.MAX_HISTORY_MESSAGES, config.MAX_HISTORY_TOKENS
+        global_history_col, global_key, config.MAX_HISTORY_MESSAGES, config.MAX_HISTORY_TOKENS, task_type=current_task
     )
     
     if not trimmed_history:
         return None
 
-    old_summary = global_memory_cache.get(global_key)
     history_lines = [f"[User]: {m['content']}" for m in trimmed_history if m.get("role") == "user"]
     
     if not history_lines:
@@ -487,7 +512,6 @@ def summarize_global_history(global_key, evolve=False):
     ]
 
     try:
-        current_task = "evolution" if old_summary else "first_contact"
         new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=300, task_type=current_task)
         if new_summary:
             global_memory_cache.set(global_key, new_summary)
@@ -505,12 +529,12 @@ def get_roast_response(group_name, username, tagged_users=None):
     is_private_env = group_name in ["private_chat"]
 
     _, trimmed_user = fetch_history(
-        history_col, user_key, config.MAX_HISTORY_MESSAGES, config.MAX_HISTORY_TOKENS
+        history_col, user_key, config.MAX_HISTORY_MESSAGES, config.MAX_HISTORY_TOKENS, task_type="roast"
     )
 
     if not is_private_env:
         _, trimmed_group = fetch_history(
-            group_history_col, group_name, config.GROUP_HISTORY_SLICE, config.GROUP_HISTORY_TOKEN_LIMIT
+            group_history_col, group_name, config.GROUP_HISTORY_SLICE, config.GROUP_HISTORY_TOKEN_LIMIT, task_type="roast"
         )
         group_memory = group_memory_cache.get(group_name)
     else:
@@ -695,7 +719,6 @@ def psi09():
                 
                 if group_msg_count >= config.GROUP_SUMMARY_EVERY_N:
                     logger.info(f"Initiating Group Summary for {group_name}")
-                    # Cleaned up /psi09 route
                     summarize_group_history(group_name)
                     group_memory_cache.reset_count(group_name)
 
