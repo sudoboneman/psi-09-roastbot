@@ -51,7 +51,8 @@ class Config:
     # The bot will stay on index 0 until it dies, then permanently move to index 1, and so on.
     MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
         "moonshotai/kimi-k2-instruct",
-        "moonshotai/kimi-k2-instruct-0905"
+        "moonshotai/kimi-k2-instruct-0905",
+        "meta-llama/llama-4-scout-17b-16e-instruct"
     ])
     
     # --- TIGHTENED FOR MAXIMUM THROUGHPUT ---
