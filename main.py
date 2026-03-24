@@ -527,11 +527,12 @@ def summarize_global_history(global_key, evolve=False):
         return old_summary
 
 # --- COMBAT ENGINE (Roasts) ---
-def get_roast_response(group_name, username, tagged_users=None):
+def get_roast_response(group_name, username, active_message, tagged_users=None):
     tagged_users = tagged_users or []
     user_key = f"{group_name}:{username}"
     is_private_env = group_name in ["private_chat"]
 
+    # 1. Fetch the background history for context (but NOT for the target message)
     _, trimmed_user = fetch_history(
         history_col, user_key, config.MAX_HISTORY_MESSAGES, config.MAX_HISTORY_TOKENS, task_type="roast"
     )
@@ -546,6 +547,7 @@ def get_roast_response(group_name, username, tagged_users=None):
 
     llm_feed = []
 
+    # 2. Inject Prompts and Memory Profiles
     system_content = ROAST_PROMPT if is_private_env else GROUP_ROAST_PROMPT
     llm_feed.append({"role": "system", "content": f"<roast_prompt>\n{system_content}\n</roast_prompt>"})
 
@@ -566,6 +568,7 @@ def get_roast_response(group_name, username, tagged_users=None):
         joined_profiles = "\n\n".join(tagged_profiles)
         llm_feed.append({"role": "system", "content": f"<tagged_member_profiles>\n{joined_profiles}\n</tagged_member_profiles>"})
 
+    # 3. Format the recent chat history
     history_lines = []
     
     if is_private_env:
@@ -590,29 +593,24 @@ def get_roast_response(group_name, username, tagged_users=None):
 
     history_text = "\n".join(history_lines) if history_lines else "[No recent history]"
     
-    # --- TARGET MESSAGE ISOLATION ---
-    target_message = ""
-    if is_private_env and trimmed_user:
-        target_message = trimmed_user[-1].get("content", "")
-    elif not is_private_env and trimmed_group:
-        target_message = trimmed_group[-1].get("content", "")
-
-    # Feed both the history context AND the isolated target wrapped in XML
+    # 4. EXPLICIT TARGET LOCK (Replaces the old database extraction)
+    # We pass the history for context, but force the AI to focus on the live active_message
     llm_feed.append({
         "role": "user", 
         "content": (
             f"<chat_history>\n{history_text}\n</chat_history>\n\n"
-            f"<target_message>\n{target_message}\n</target_message>"
+            f"<active_target>\nTARGET USER: [{username}]\nMESSAGE: {active_message}\n</active_target>"
         )
     })
 
+    # 5. Fire the Engine
     try:
         base_reply = query_private_brain(llm_feed=llm_feed, temperature=0.9, max_output_tokens=150, task_type="roast")
     except Exception as e:
         logger.error(f"AI Error: {e}")
         base_reply = ""
 
-    # CLEANUP REGEX
+    # 6. Clean up hallucinations or prefix tags
     temp_reply = re.sub(r"^(?:\[.*?\]|PSI-09)\s*:\s*", "", base_reply or "", flags=re.IGNORECASE)
     temp_reply = re.sub(r"\n\[.*?\]:.*", "", temp_reply, flags=re.DOTALL) 
     clean_reply = re.sub(r"\s{2,}", " ", temp_reply).strip()
@@ -621,6 +619,7 @@ def get_roast_response(group_name, username, tagged_users=None):
         logger.info(f"Empty or failed response for {user_key}. Skipping storage.")
         return ""
 
+    # 7. Store the bot's response in the database
     user_entry = {
         "role": "assistant",
         "content": clean_reply,
@@ -727,7 +726,8 @@ def psi09():
                     group_memory_cache.reset_count(group_name)
 
         if is_private or force_reply or bot_mentioned_in(raw_message):
-            reply = get_roast_response(group_name, username, tagged_users)
+            # Pass user_message directly into the function
+            reply = get_roast_response(group_name, username, user_message, tagged_users)
             return jsonify({"reply": reply}), 200
 
         return jsonify({"reply": ""}), 200
