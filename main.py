@@ -69,16 +69,16 @@ class Config:
     
     # DATABASE CEILINGS (Keep these high for memory)
     GROUP_HISTORY_MAX_MESSAGES: int = 50000  #
-    GROUP_HISTORY_SLICE: int = 100 # Fast database read
+    GROUP_HISTORY_SLICE: int = 80 # Fast database read
     
     # LLM PAYLOAD CEILINGS (Shrunk to maximize API calls/min)
-    MAX_HISTORY_MESSAGES: int = 15 # Down from 30
+    MAX_HISTORY_MESSAGES: int = 16 # Down from 30
     MAX_HISTORY_TOKENS: int = 400 # Tightly caps the user's personal history
-    GROUP_HISTORY_TOKEN_LIMIT: int = 800 # Tightly caps the group's history
+    GROUP_HISTORY_TOKEN_LIMIT: int = 2000 # Tightly caps the group's history
     
     # THE PACING ENGINE (Tuned for 6b6t Anarchy traffic)
-    EVOLVE_EVERY_N_MESSAGES: int = 50 # Evolve active users frequently
-    GROUP_SUMMARY_EVERY_N: int = 200 # Rapidly update the group dynamic
+    EVOLVE_EVERY_N_MESSAGES: int = 30 # Evolve active users frequently
+    GROUP_SUMMARY_EVERY_N: int = 150 # Rapidly update the group dynamic
 
 config = Config()
 
