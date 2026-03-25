@@ -619,29 +619,6 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
         logger.info(f"Empty or failed response for {user_key}. Skipping storage.")
         return ""
 
-    # 7. Store the bot's response in the database
-    user_entry = {
-        "role": "assistant",
-        "content": clean_reply,
-        "timestamp": datetime.now(UTC).isoformat(),
-    }
-    group_entry = {
-        "sender": "PSI-09",
-        "content": clean_reply,
-        "timestamp": datetime.now(UTC).isoformat(),
-    }
-
-    try:
-        history_col.update_one({"_id": user_key}, {"$push": {"messages": user_entry}}, upsert=True)
-        if not is_private_env:
-            group_history_col.update_one(
-                {"_id": group_name},
-                {"$push": {"messages": {"$each": [group_entry], "$slice": -config.GROUP_HISTORY_MAX_MESSAGES}}},
-                upsert=True,
-            )
-    except Exception as e:
-        logger.warning(f"Reply storage failed: {e}")
-
     return clean_reply
 
 # --- API ROUTES ---
@@ -678,15 +655,46 @@ def psi09():
             )
 
         is_private = group_name in ["private_chat"]
+        user_key = f"{group_name}:{username}"
+        global_key = f"Global:{username}"
 
+        # 1. GENERATE ROAST FIRST (Before database storage)
+        will_reply = is_private or force_reply or bot_mentioned_in(raw_message)
+        reply = ""
+        if will_reply:
+            reply = get_roast_response(group_name, username, user_message, tagged_users)
+
+        # 2. STORE USER MESSAGE
         if is_private:
             store_user_message(platform, group_name, sender_id, username, display_name, user_message)
         else:
             store_group_message(platform, group_name, sender_id, username, display_name, user_message)
             store_user_message(platform, group_name, sender_id, username, display_name, user_message)
 
-        user_key = f"{group_name}:{username}"
+        # 3. STORE BOT REPLY (Chronologically after the user message)
+        if reply:
+            user_entry = {
+                "role": "assistant",
+                "content": reply,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            try:
+                history_col.update_one({"_id": user_key}, {"$push": {"messages": user_entry}}, upsert=True)
+                if not is_private:
+                    group_entry = {
+                        "sender": "PSI-09",
+                        "content": reply,
+                        "timestamp": datetime.now(UTC).isoformat(),
+                    }
+                    group_history_col.update_one(
+                        {"_id": group_name},
+                        {"$push": {"messages": {"$each": [group_entry], "$slice": -config.GROUP_HISTORY_MAX_MESSAGES}}},
+                        upsert=True,
+                    )
+            except Exception as e:
+                logger.warning(f"Reply storage failed: {e}")
 
+        # 4. RUN EVOLUTION CHECKS LAST
         with user_locks[user_key]:
             msg_count = memory_cache.increment(user_key)
             current_user_memory = memory_cache.get(user_key)
@@ -701,7 +709,6 @@ def psi09():
                 summarize_user_history(user_key, evolve=True)
                 memory_cache.reset_count(user_key)
 
-        global_key = f"Global:{username}"
         with global_locks[global_key]:
             global_msg_count = global_memory_cache.increment(global_key)
             current_global_memory = global_memory_cache.get(global_key)
@@ -725,12 +732,7 @@ def psi09():
                     summarize_group_history(group_name)
                     group_memory_cache.reset_count(group_name)
 
-        if is_private or force_reply or bot_mentioned_in(raw_message):
-            # Pass user_message directly into the function
-            reply = get_roast_response(group_name, username, user_message, tagged_users)
-            return jsonify({"reply": reply}), 200
-
-        return jsonify({"reply": ""}), 200
+        return jsonify({"reply": reply}), 200
 
     except Exception as e:
         logger.exception(f"/psi09 failure: {e}")
