@@ -418,7 +418,7 @@ def summarize_user_history(user_key, evolve=False):
 
     if old_summary is None:
         sys_prompt = FIRST_CONTACT_PROMPT
-        user_content = f"<chat_history>\n[User]: {trimmed_history[-1]['content']}\n</chat_history>"
+        user_content = f"<chat_history>\n{history_lines[-1]}\n</chat_history>"
     else:
         if not evolve:
             return old_summary
@@ -503,7 +503,7 @@ def summarize_global_history(global_key, evolve=False):
 
     if old_summary is None:
         sys_prompt = GLOBAL_FIRST_CONTACT_PROMPT
-        user_content = f"<cross_platform_history>\n[User]: {trimmed_history[-1]['content']}\n</cross_platform_history>"
+        user_content = f"<cross_platform_history>\n{history_lines[-1]}\n</cross_platform_history>"
     else:
         if not evolve:
             return old_summary
