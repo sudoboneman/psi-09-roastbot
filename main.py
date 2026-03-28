@@ -155,10 +155,7 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
                 messages=llm_feed,
                 temperature=temperature,
                 max_completion_tokens=max_output_tokens,
-                top_p=1,
-                # High penalty for roasts, low penalty for clinical background summaries
-                frequency_penalty=1.8 if is_roast else 1.0,
-                presence_penalty=1.8 if is_roast else 1.0
+                top_p=1
             )
             return response.choices[0].message.content.strip()
             
