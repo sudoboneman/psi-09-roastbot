@@ -65,6 +65,7 @@ class Config:
     # --- TIGHTENED FOR MAXIMUM THROUGHPUT ---
     BOT_NUMBER: str = os.getenv("BOT_NUMBER")
     DISCORD_ID: str = os.getenv("DISCORD_ID")
+    DISCORD_ID_2: str = os.getenv("DISCORD_ID_2")
     MEMORY_TTL: int = 500
     
     # DATABASE CEILINGS (Keep these high for memory)
@@ -390,10 +391,13 @@ def bot_mentioned_in(text: str) -> bool:
         return False
     if re.search(r"@psi-09", text, flags=re.IGNORECASE):
         return True
-    if config.DISCORD_ID:
-        discord_pattern = r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">"
-        if re.search(discord_pattern, text):
-            return True
+    
+    # Loop through all configured Discord IDs
+    for d_id in [config.DISCORD_ID, config.DISCORD_ID_2]:
+        if d_id:
+            discord_pattern = r"<@!?" + re.escape(str(d_id)) + r">"
+            if re.search(discord_pattern, text):
+                return True
     return False
 
 # --- SUMMARIZATION ENGINES ---
@@ -462,8 +466,9 @@ def summarize_group_history(group_name):
             continue
 
         content = m.get("content", "")
-        if config.DISCORD_ID:
-            content = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content)
+        for d_id in [config.DISCORD_ID, config.DISCORD_ID_2]:
+            if d_id:
+                content = re.sub(r"<@!?" + re.escape(str(d_id)) + r">", "@PSI-09", content)
         recent.append(f"[{sender}]: {content}")
 
     llm_feed = [
@@ -573,8 +578,9 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
             for m in trimmed_user:
                 role = m.get("role", "user")
                 content = m.get("content", "").strip()
-                if config.DISCORD_ID:
-                    content = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", content)
+                for d_id in [config.DISCORD_ID, config.DISCORD_ID_2]:
+                    if d_id:
+                        content = re.sub(r"<@!?" + re.escape(str(d_id)) + r">", "@PSI-09", content)
                 if content:
                     prefix = "PSI-09" if role == "assistant" else username
                     history_lines.append(f"[{prefix}]: {content}")
@@ -583,8 +589,9 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
             for entry in trimmed_group:
                 s = entry.get("sender") or entry.get("username") or entry.get("display_name") or "unknown"
                 c = entry.get("content", "").strip()
-                if config.DISCORD_ID:
-                    c = re.sub(r"<@!?" + re.escape(config.DISCORD_ID) + r">", "@PSI-09", c)
+                for d_id in [config.DISCORD_ID, config.DISCORD_ID_2]:
+                    if d_id:
+                        c = re.sub(r"<@!?" + re.escape(str(d_id)) + r">", "@PSI-09", c)
                 if c:
                     history_lines.append(f"[{s}]: {c}")
 
@@ -644,12 +651,13 @@ def psi09():
             return jsonify({"reply": ""}), 200
 
         user_message = raw_message
-        if config.DISCORD_ID:
-            user_message = re.sub(
-                r"<@!?" + re.escape(str(config.DISCORD_ID)) + r">",
-                "@PSI-09",
-                user_message,
-            )
+        for d_id in [config.DISCORD_ID, config.DISCORD_ID_2]:
+            if d_id:
+                user_message = re.sub(
+                    r"<@!?" + re.escape(str(d_id)) + r">",
+                    "@PSI-09",
+                    user_message,
+                )
 
         is_private = group_name in ["private_chat"]
         user_key = f"{group_name}:{username}"
