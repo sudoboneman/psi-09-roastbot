@@ -59,7 +59,8 @@ class Config:
     
     BACKGROUND_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
         "llama-3.3-70b-versatile",
-        "meta-llama/llama-4-scout-17b-16e-instruct" 
+        "meta-llama/llama-4-scout-17b-16e-instruct", 
+        "llama-3.1-8b-instant"
     ])
     
     # --- TIGHTENED FOR MAXIMUM THROUGHPUT ---
@@ -196,22 +197,32 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
 app = Flask(__name__)
 CORS(app)
 
-# --- LOADERS FIX: Check both lists for tokenizers ---
+# --- LAZY LOAD TOKENIZERS ---
 all_models = config.ROAST_MODELS + config.BACKGROUND_MODELS
 
 KIMI_ENCODING = None
-if any("kimi" in m.lower() or "moonshot" in m.lower() for m in all_models):
-    try:
-        KIMI_ENCODING = AutoTokenizer.from_pretrained("moonshotai/Kimi-K2-Instruct", trust_remote_code=True)
-    except Exception as e:
-        logger.warning(f"Failed to load Kimi tokenizer: {e}")
-
 LLAMA_ENCODING = None
-if any("llama" in m.lower() for m in all_models):
-    try:
-        LLAMA_ENCODING = AutoTokenizer.from_pretrained("unsloth/Llama-4-Scout-17B-16E-Instruct", trust_remote_code=True)
-    except Exception as e:
-        logger.warning(f"Failed to load Llama tokenizer: {e}")
+
+def background_tokenizer_load():
+    global KIMI_ENCODING, LLAMA_ENCODING
+    logger.info("Starting background download of tokenizers...")
+    
+    if any("kimi" in m.lower() or "moonshot" in m.lower() for m in all_models):
+        try:
+            KIMI_ENCODING = AutoTokenizer.from_pretrained("moonshotai/Kimi-K2-Instruct", trust_remote_code=True)
+            logger.info("Kimi tokenizer successfully loaded into RAM.")
+        except Exception as e:
+            logger.warning(f"Failed to load Kimi tokenizer: {e}")
+
+    if any("llama" in m.lower() for m in all_models):
+        try:
+            LLAMA_ENCODING = AutoTokenizer.from_pretrained("unsloth/Llama-4-Scout-17B-16E-Instruct", trust_remote_code=True)
+            logger.info("Llama tokenizer successfully loaded into RAM.")
+        except Exception as e:
+            logger.warning(f"Failed to load Llama tokenizer: {e}")
+
+# Fire the download in a background thread so it doesn't block Flask from starting
+threading.Thread(target=background_tokenizer_load, daemon=True).start()
 
 # 3. The precise routing engine
 def tokens_of(text: str, task_type: str = "roast") -> int:
@@ -337,7 +348,7 @@ def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
     return profiles
 
 # --- DATABASE STORAGE ---
-def store_user_message(platform, group_name, sender_id, username, display_name, message):
+def store_user_message(platform, group_name, channel_name, sender_id, username, display_name, message):
     user_key = f"{group_name}:{username}"
     global_key = f"Global:{username}"
     
@@ -347,12 +358,13 @@ def store_user_message(platform, group_name, sender_id, username, display_name, 
         "username": username,
         "display_name": display_name,
         "platform": platform, 
+        "channel": channel_name, # <-- ADD METADATA
         "content": message,
         "timestamp": datetime.now(UTC).isoformat(),
     }
     
     global_entry = local_entry.copy()
-    global_entry["content"] = f"[Sent via {platform} - {group_name}] {message}"
+    global_entry["content"] = f"[Sent via {platform} - {group_name} #{channel_name}] {message}"
     
     try:
         history_col.update_one(
@@ -368,12 +380,13 @@ def store_user_message(platform, group_name, sender_id, username, display_name, 
     except PyMongoError as e:
         logger.warning(f"Failed to store user message: {e}")
 
-def store_group_message(platform, group_name, sender_id, username, display_name, message):
+def store_group_message(platform, group_name, channel_name, sender_id, username, display_name, message):
     entry = {
         "sender_id": sender_id,
         "username": username,
         "display_name": display_name,
         "platform": platform,
+        "channel": channel_name, # <-- ADD METADATA
         "content": message,
         "timestamp": datetime.now(UTC).isoformat(),
     }
@@ -469,7 +482,8 @@ def summarize_group_history(group_name):
         for d_id in [config.DISCORD_ID, config.DISCORD_ID_2]:
             if d_id:
                 content = re.sub(r"<@!?" + re.escape(str(d_id)) + r">", "@PSI-09", content)
-        recent.append(f"[{sender}]: {content}")
+        chan = m.get("channel", "unknown")
+        recent.append(f"[#{chan}] [{sender}]: {content}")
 
     llm_feed = [
         {"role": "system", "content": f"<group_summary_prompt>\n{GROUP_SUMMARY_PROMPT}\n</group_summary_prompt>"},
@@ -583,7 +597,8 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
                         content = re.sub(r"<@!?" + re.escape(str(d_id)) + r">", "@PSI-09", content)
                 if content:
                     prefix = "PSI-09" if role == "assistant" else username
-                    history_lines.append(f"[{prefix}]: {content}")
+                    chan = m.get("channel", "unknown")
+                    history_lines.append(f"[#{chan}] [{prefix}]: {content}")
     else:
         if trimmed_group:
             for entry in trimmed_group:
@@ -593,7 +608,8 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
                     if d_id:
                         c = re.sub(r"<@!?" + re.escape(str(d_id)) + r">", "@PSI-09", c)
                 if c:
-                    history_lines.append(f"[{s}]: {c}")
+                    chan = entry.get("channel", "unknown")
+                    history_lines.append(f"[#{chan}] [{s}]: {c}")
 
     history_text = "\n".join(history_lines) if history_lines else "[No recent history]"
     
@@ -639,8 +655,9 @@ def psi09():
         username = data.get("username")
         display_name = data.get("display_name") or username
         group_name = data.get("group_name") or "DefaultGroup"
+        channel_name = data.get("channel") or "unknown"
 
-        if group_name.lower() in ["defaultgroup", "discord_dm", "mc_dm"]:
+        if group_name.lower() in ["defaultgroup", "discord_dm"]:
             group_name = "private_chat"
 
         tagged_users = data.get("tagged_users", [])
@@ -671,10 +688,10 @@ def psi09():
 
         # 2. STORE USER MESSAGE
         if is_private:
-            store_user_message(platform, group_name, sender_id, username, display_name, user_message)
+            store_user_message(platform, group_name, channel_name, sender_id, username, display_name, user_message)
         else:
-            store_group_message(platform, group_name, sender_id, username, display_name, user_message)
-            store_user_message(platform, group_name, sender_id, username, display_name, user_message)
+            store_group_message(platform, group_name, channel_name, sender_id, username, display_name, user_message)
+            store_user_message(platform, group_name, channel_name, sender_id, username, display_name, user_message)
 
         # 3. STORE BOT REPLY (Chronologically after the user message)
         if reply:
