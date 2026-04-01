@@ -350,7 +350,7 @@ def fetch_history(collection, doc_id, limit_messages, max_input_tokens=None, tas
         return raw, trimmed
     return raw, raw
 
-def fetch_tagged_profiles(group_name, tagged_users, max_targets=3):
+def fetch_tagged_profiles(tagged_users, max_targets=3):
     profiles = []
     for u in tagged_users[:max_targets]:
         uid = u.get("id")
@@ -461,7 +461,7 @@ def summarize_user_history(user_key, evolve=False):
     ]
 
     try:
-        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=300, task_type=current_task)
+        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=1024, task_type=current_task)
         
         if new_summary:
             memory_cache.set(user_key, new_summary)
@@ -507,7 +507,7 @@ def summarize_group_history(group_name):
     ]
 
     try:
-        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=300, task_type="group_summary")
+        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=1024, task_type="group_summary")
     except Exception as e:
         logger.warning(f"Group summarization failed for {group_name}: {e}")
         new_summary = old_summary
@@ -548,7 +548,7 @@ def summarize_global_history(global_key, evolve=False):
     ]
 
     try:
-        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=300, task_type=current_task)
+        new_summary = query_private_brain(llm_feed, temperature=0.8, max_output_tokens=1024, task_type=current_task)
         if new_summary:
             global_memory_cache.set(global_key, new_summary)
             logger.info(f"Global profile updated for {global_key} ({current_task})")
@@ -595,7 +595,7 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
     if not is_private_env and group_memory:
         llm_feed.append({"role": "system", "content": f"<group_dynamic_summary>\n{group_memory.strip()}\n</group_dynamic_summary>"})
 
-    tagged_profiles = fetch_tagged_profiles(group_name, tagged_users)
+    tagged_profiles = fetch_tagged_profiles(tagged_users)
     if tagged_profiles:
         joined_profiles = "\n\n".join(tagged_profiles)
         llm_feed.append({"role": "system", "content": f"<tagged_member_profiles>\n{joined_profiles}\n</tagged_member_profiles>"})
