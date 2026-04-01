@@ -11,6 +11,7 @@ import time
 import logging
 import sys
 import random
+import tiktoken
 
 from huggingface_hub import login
 from transformers import AutoTokenizer
@@ -59,8 +60,8 @@ class Config:
     
     BACKGROUND_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
         "llama-3.3-70b-versatile",
-        "meta-llama/llama-4-scout-17b-16e-instruct", 
-        "llama-3.1-8b-instant"
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "gpt-oss-120b"
     ])
     
     # --- TIGHTENED FOR MAXIMUM THROUGHPUT ---
@@ -202,11 +203,13 @@ all_models = config.ROAST_MODELS + config.BACKGROUND_MODELS
 
 KIMI_ENCODING = None
 LLAMA_ENCODING = None
+GPT_ENCODING = None
 
 def background_tokenizer_load():
-    global KIMI_ENCODING, LLAMA_ENCODING
+    global KIMI_ENCODING, LLAMA_ENCODING, GPT_ENCODING
     logger.info("Starting background download of tokenizers...")
     
+    # 1. Load Kimi
     if any("kimi" in m.lower() or "moonshot" in m.lower() for m in all_models):
         try:
             KIMI_ENCODING = AutoTokenizer.from_pretrained("moonshotai/Kimi-K2-Instruct", trust_remote_code=True)
@@ -214,12 +217,21 @@ def background_tokenizer_load():
         except Exception as e:
             logger.warning(f"Failed to load Kimi tokenizer: {e}")
 
+    # 2. Load Llama
     if any("llama" in m.lower() for m in all_models):
         try:
             LLAMA_ENCODING = AutoTokenizer.from_pretrained("unsloth/Llama-4-Scout-17B-16E-Instruct", trust_remote_code=True)
             logger.info("Llama tokenizer successfully loaded into RAM.")
         except Exception as e:
             logger.warning(f"Failed to load Llama tokenizer: {e}")
+
+    # 3. Load GPT (Using standard cl100k_base which covers GPT-3.5/4/OSS BPE equivalents)
+    if any("gpt" in m.lower() for m in all_models):
+        try:
+            GPT_ENCODING = tiktoken.get_encoding("cl100k_base")
+            logger.info("GPT tokenizer (cl100k_base) successfully loaded into RAM.")
+        except Exception as e:
+            logger.warning(f"Failed to load GPT tokenizer: {e}")
 
 # Fire the download in a background thread so it doesn't block Flask from starting
 threading.Thread(target=background_tokenizer_load, daemon=True).start()
@@ -239,12 +251,16 @@ def tokens_of(text: str, task_type: str = "roast") -> int:
     
     is_kimi = "kimi" in current_active_model or "moonshot" in current_active_model
     is_llama = "llama" in current_active_model
+    is_gpt = "gpt" in current_active_model
 
     if is_kimi and KIMI_ENCODING:
         return len(KIMI_ENCODING.encode(text))
         
     if is_llama and LLAMA_ENCODING:
         return len(LLAMA_ENCODING.encode(text))
+
+    if is_gpt and GPT_ENCODING:
+        return len(GPT_ENCODING.encode(text))
         
     return int(len(text.split()) * 1.5)
 
