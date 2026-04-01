@@ -61,7 +61,7 @@ class Config:
     BACKGROUND_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
         "llama-3.3-70b-versatile",
         "meta-llama/llama-4-scout-17b-16e-instruct",
-        "gpt-oss-120b"
+        "openai/gpt-oss-120b"
     ])
     
     # --- TIGHTENED FOR MAXIMUM THROUGHPUT ---
@@ -129,7 +129,7 @@ global_memory_col = db["global_memory"]
 def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roast", max_retries=4):
     """
     Dual-Brain Architecture. 
-    - Routes Roasts to Key 1 (Kimi), Backgrounds to Key 2 (Llama).
+    - Routes Roasts to Key 1 (Kimi), Backgrounds to Key 2 (Llama/GPT).
     - Maintains separate persistent round-robin loops for both.
     """
     global active_roast_index, active_bg_index
