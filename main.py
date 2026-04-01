@@ -80,8 +80,8 @@ class Config:
     GROUP_HISTORY_TOKEN_LIMIT: int = 2000 # Tightly caps the group's history
     
     # THE PACING ENGINE (Tuned for 6b6t Anarchy traffic)
-    EVOLVE_EVERY_N_MESSAGES: int = 30 # Evolve active users frequently
-    GROUP_SUMMARY_EVERY_N: int = 150 # Rapidly update the group dynamic
+    EVOLVE_EVERY_N_MESSAGES: int = 50 # Evolve active users frequently
+    GROUP_SUMMARY_EVERY_N: int = 300 # Rapidly update the group dynamic
 
 config = Config()
 
