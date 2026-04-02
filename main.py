@@ -61,7 +61,9 @@ class Config:
     BACKGROUND_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
         "llama-3.3-70b-versatile",
         "meta-llama/llama-4-scout-17b-16e-instruct",
-        "openai/gpt-oss-120b"
+        "openai/gpt-oss-120b",
+        "moonshotai/kimi-k2-instruct",
+        "moonshotai/kimi-k2-instruct-0905"
     ])
     
     # --- TIGHTENED FOR MAXIMUM THROUGHPUT ---
