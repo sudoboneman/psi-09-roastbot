@@ -54,16 +54,15 @@ class Config:
     
     # --- DUAL PERSISTENT MODEL CYCLES ---
     ROAST_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
-        "moonshotai/kimi-k2-instruct",
-        "moonshotai/kimi-k2-instruct-0905"
+        "qwen/qwen3-32b",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "llama-3.3-70b-versatile"
     ])
     
     BACKGROUND_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
         "llama-3.3-70b-versatile",
         "meta-llama/llama-4-scout-17b-16e-instruct",
-        "openai/gpt-oss-120b",
-        "moonshotai/kimi-k2-instruct",
-        "moonshotai/kimi-k2-instruct-0905"
+        "openai/gpt-oss-120b"
     ])
     
     # --- TIGHTENED FOR MAXIMUM THROUGHPUT ---
@@ -206,63 +205,52 @@ all_models = config.ROAST_MODELS + config.BACKGROUND_MODELS
 KIMI_ENCODING = None
 LLAMA_ENCODING = None
 GPT_ENCODING = None
+QWEN_ENCODING = None
 
 def background_tokenizer_load():
-    global KIMI_ENCODING, LLAMA_ENCODING, GPT_ENCODING
+    global KIMI_ENCODING, LLAMA_ENCODING, GPT_ENCODING, QWEN_ENCODING
     logger.info("Starting background download of tokenizers...")
     
-    # 1. Load Kimi
     if any("kimi" in m.lower() or "moonshot" in m.lower() for m in all_models):
         try:
             KIMI_ENCODING = AutoTokenizer.from_pretrained("moonshotai/Kimi-K2-Instruct", trust_remote_code=True)
-            logger.info("Kimi tokenizer successfully loaded into RAM.")
-        except Exception as e:
-            logger.warning(f"Failed to load Kimi tokenizer: {e}")
+            logger.info("Kimi tokenizer loaded.")
+        except Exception: pass
 
-    # 2. Load Llama
     if any("llama" in m.lower() for m in all_models):
         try:
             LLAMA_ENCODING = AutoTokenizer.from_pretrained("unsloth/Llama-4-Scout-17B-16E-Instruct", trust_remote_code=True)
-            logger.info("Llama tokenizer successfully loaded into RAM.")
-        except Exception as e:
-            logger.warning(f"Failed to load Llama tokenizer: {e}")
+            logger.info("Llama tokenizer loaded.")
+        except Exception: pass
 
-    # 3. Load GPT (Using standard cl100k_base which covers GPT-3.5/4/OSS BPE equivalents)
     if any("gpt" in m.lower() for m in all_models):
         try:
             GPT_ENCODING = tiktoken.get_encoding("cl100k_base")
-            logger.info("GPT tokenizer (cl100k_base) successfully loaded into RAM.")
-        except Exception as e:
-            logger.warning(f"Failed to load GPT tokenizer: {e}")
+            logger.info("GPT tokenizer loaded.")
+        except Exception: pass
 
-# Fire the download in a background thread so it doesn't block Flask from starting
+    if any("qwen" in m.lower() for m in all_models):
+        try:
+            QWEN_ENCODING = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
+            logger.info("Qwen tokenizer loaded.")
+        except Exception: pass
+
 threading.Thread(target=background_tokenizer_load, daemon=True).start()
 
-# 3. The precise routing engine
 def tokens_of(text: str, task_type: str = "roast") -> int:
-    if not text:
-        return 0
-        
+    if not text: return 0
     global active_roast_index, active_bg_index
     
-    # Peek at the correct active model based on the task
-    if task_type == "roast":
-        current_active_model = config.ROAST_MODELS[active_roast_index].lower()
-    else:
-        current_active_model = config.BACKGROUND_MODELS[active_bg_index].lower()
+    current_active_model = config.ROAST_MODELS[active_roast_index].lower() if task_type == "roast" else config.BACKGROUND_MODELS[active_bg_index].lower()
     
-    is_kimi = "kimi" in current_active_model or "moonshot" in current_active_model
-    is_llama = "llama" in current_active_model
-    is_gpt = "gpt" in current_active_model
-
-    if is_kimi and KIMI_ENCODING:
+    if ("kimi" in current_active_model or "moonshot" in current_active_model) and KIMI_ENCODING:
         return len(KIMI_ENCODING.encode(text))
-        
-    if is_llama and LLAMA_ENCODING:
+    if "llama" in current_active_model and LLAMA_ENCODING:
         return len(LLAMA_ENCODING.encode(text))
-
-    if is_gpt and GPT_ENCODING:
+    if "gpt" in current_active_model and GPT_ENCODING:
         return len(GPT_ENCODING.encode(text))
+    if "qwen" in current_active_model and QWEN_ENCODING:
+        return len(QWEN_ENCODING.encode(text))
         
     return int(len(text.split()) * 1.5)
 
