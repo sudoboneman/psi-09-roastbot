@@ -631,12 +631,26 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
 
     # 5. Fire the Engine
     try:
-        base_reply = query_private_brain(llm_feed=llm_feed, temperature=0.9, max_output_tokens=150, task_type="roast")
+        base_reply = query_private_brain(llm_feed=llm_feed, temperature=0.9, max_output_tokens=4096, task_type="roast")
     except Exception as e:
         logger.error(f"AI Error: {e}")
         base_reply = ""
 
     # 6. Clean up hallucinations or prefix tags
+    # 1. SCRUB REASONING BLOCKS (The Think Tags)
+    # Removes completed <think>...</think> blocks
+    base_reply = re.sub(r"<think>.*?</think>\s*", "", base_reply, flags=re.DOTALL | re.IGNORECASE)
+    # Removes unclosed <think> blocks just in case it hit a token limit mid-thought
+    base_reply = re.sub(r"<think>.*", "", base_reply, flags=re.DOTALL | re.IGNORECASE)
+
+    # 2. Extract Reaction
+    reaction = None
+    react_match = re.search(r"\[REACT:\s*(.*?)\s*\]", base_reply, flags=re.IGNORECASE)
+    if react_match:
+        reaction = react_match.group(1).strip()
+        base_reply = re.sub(r"\[REACT:\s*.*?\s*\]", "", base_reply, flags=re.IGNORECASE)
+
+    # 3. Final Cleanup
     temp_reply = re.sub(r"^(?:\[.*?\]|PSI-09)\s*:\s*", "", base_reply or "", flags=re.IGNORECASE)
     temp_reply = re.sub(r"\n\[.*?\]:.*", "", temp_reply, flags=re.DOTALL) 
     clean_reply = re.sub(r"\s{2,}", " ", temp_reply).strip()
