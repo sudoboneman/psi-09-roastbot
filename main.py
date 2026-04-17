@@ -64,7 +64,7 @@ class Config:
 
     # --- DUAL PERSISTENT MODEL CYCLES ---
     ROAST_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
-        "moonshotai/kimi-k2.5" 
+        "google/gemma-4-31b-it"
     ])
     
     BACKGROUND_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
@@ -165,6 +165,8 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
                     "Authorization": f"Bearer {current_key}",
                     "Accept": "application/json"
                 }
+
+
                 payload = {
                     "model": current_model,
                     "messages": llm_feed,
@@ -172,7 +174,7 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
                     "temperature": temperature,
                     "top_p": 1.00,
                     "stream": False,
-                    "chat_template_kwargs": {"thinking": True} 
+                    "chat_template_kwargs": {"enable_thinking": True} 
                 }
                 
                 logger.info(f"[ROAST] Firing request to Nvidia ({current_model})...")
@@ -260,9 +262,10 @@ KIMI_ENCODING = None
 LLAMA_ENCODING = None
 GPT_ENCODING = None
 QWEN_ENCODING = None
+GEMMA_ENCODING = None
 
 def background_tokenizer_load():
-    global KIMI_ENCODING, LLAMA_ENCODING, GPT_ENCODING, QWEN_ENCODING
+    global KIMI_ENCODING, LLAMA_ENCODING, GPT_ENCODING, QWEN_ENCODING, GEMMA_ENCODING
     logger.info("Starting background download of tokenizers...")
     
     if any("kimi" in m.lower() or "moonshot" in m.lower() for m in all_models):
@@ -289,6 +292,12 @@ def background_tokenizer_load():
             logger.info("Qwen tokenizer loaded.")
         except Exception: pass
 
+    if any("gemma" in m.lower() for m in all_models):
+        try:
+            GEMMA_ENCODING = AutoTokenizer.from_pretrained("google/gemma-4-31b-it")
+            logger.info("Gemma tokenizer loaded.")
+        except Exception as e: pass
+
 threading.Thread(target=background_tokenizer_load, daemon=True).start()
 
 def tokens_of(text: str, task_type: str = "roast") -> int:
@@ -305,6 +314,8 @@ def tokens_of(text: str, task_type: str = "roast") -> int:
         return len(GPT_ENCODING.encode(text))
     if "qwen" in current_active_model and QWEN_ENCODING:
         return len(QWEN_ENCODING.encode(text))
+    if "gemma" in current_active_model and GEMMA_ENCODING:
+        return len(GEMMA_ENCODING.encode(text))
         
     return int(len(text.split()) * 1.5)
 
@@ -699,6 +710,9 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
     logger.info(f"RAW OUTPUT FROM NVIDIA:\n{'='*40}\n{base_reply}\n{'='*40}")
 
     # 6. Clean up hallucinations or prefix tags
+    clean_reply = re.sub(r"<\|?think\|?>.*?</\|?think\|?>\s*", "", clean_reply, flags=re.DOTALL | re.IGNORECASE)
+    clean_reply = re.sub(r"<\|?think\|?>.*", "", clean_reply, flags=re.DOTALL | re.IGNORECASE)
+    clean_reply = re.sub(r"<\|channel>thought.*?</channel\|>\s*", "", clean_reply, flags=re.DOTALL | re.IGNORECASE)
     clean_reply = re.sub(r"<think>.*?</think>\s*", "", base_reply, flags=re.DOTALL | re.IGNORECASE)
     clean_reply = re.sub(r"<think>.*", "", clean_reply, flags=re.DOTALL | re.IGNORECASE)
     clean_reply = clean_reply.strip()
