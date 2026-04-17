@@ -179,7 +179,8 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
                 response.raise_for_status() 
                 
                 data = response.json()
-                return data["choices"][0]["message"]["content"].strip()
+                content = data["choices"][0]["message"].get("content") or ""
+                return content.strip()
                 
             # --- GROQ ROUTING (For Background & Fallbacks) ---
             else:
@@ -195,7 +196,8 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
                     max_completion_tokens=max_output_tokens,
                     top_p=1
                 )
-                return response.choices[0].message.content.strip()
+                content = response.choices[0].message.content or ""
+                return content.strip()
             
         except Exception as e:
             error_msg = str(e).lower()
@@ -676,17 +678,14 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
         logger.error(f"AI Error: {e}")
         base_reply = ""
 
+    if not base_reply:
+        logger.info(f"Empty response from model (Safety refusal or API failure) for {user_key}. Skipping.")
+        return ""
+
     # 6. Clean up hallucinations or prefix tags
     # Scrub the thinking scratchpad so Discord only sees the final insult
     base_reply = re.sub(r"<think>.*?</think>\s*", "", base_reply, flags=re.DOTALL | re.IGNORECASE)
     base_reply = re.sub(r"<think>.*", "", base_reply, flags=re.DOTALL | re.IGNORECASE)
-
-    # Classic reaction extraction
-    reaction = None
-    react_match = re.search(r"\[REACT:\s*(.*?)\s*\]", base_reply, flags=re.IGNORECASE)
-    if react_match:
-        reaction = react_match.group(1).strip()
-        base_reply = re.sub(r"\[REACT:\s*.*?\s*\]", "", base_reply, flags=re.IGNORECASE)
 
     clean_reply = base_reply.strip()
     
