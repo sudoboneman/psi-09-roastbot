@@ -12,6 +12,7 @@ import logging
 import sys
 import random
 import tiktoken
+import requests
 
 from huggingface_hub import login
 from transformers import AutoTokenizer
@@ -45,17 +46,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 UTC = timezone.utc
 
-# Config
+# Inside your Config dataclass:
 @dataclass
 class Config:
     MONGO_URI: str = os.getenv("MONGO_URI")
-    GROQ_API_KEY_1: str = os.getenv("GROQ_API_KEY_1") # Roasts ONLY
-    GROQ_API_KEY_2: str = os.getenv("GROQ_API_KEY_2") # Background Tasks ONLY
+    GROQ_API_KEY_1: str = os.getenv("GROQ_API_KEY_1") 
+    GROQ_API_KEY_2: str = os.getenv("GROQ_API_KEY_2") 
     
+    # Dual Nvidia Keys
+    NVIDIA_API_KEY_1: str = os.getenv("NVIDIA_API_KEY_1")
+    NVIDIA_API_KEY_2: str = os.getenv("NVIDIA_API_KEY_2")
+    
+    @property
+    def NVIDIA_KEYS(self):
+        # Dynamically returns a list of only the keys that exist
+        return [k for k in [self.NVIDIA_API_KEY_1, self.NVIDIA_API_KEY_2] if k]
+
     # --- DUAL PERSISTENT MODEL CYCLES ---
     ROAST_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
-        "llama-3.3-70b-versatile",
-        "meta-llama/llama-4-scout-17b-16e-instruct"
+        "moonshotai/kimi-k2.5" 
     ])
     
     BACKGROUND_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
@@ -85,12 +94,17 @@ class Config:
 
 config = Config()
 
-# --- DUAL STATE TRACKERS ---
+
+# --- EXISTING STATE TRACKERS ---
 roast_model_lock = threading.Lock()
 active_roast_index = 0
 
 bg_model_lock = threading.Lock()
 active_bg_index = 0
+
+    # --- NEW NVIDIA KEY TRACKER ---
+nvidia_key_lock = threading.Lock()
+active_nvidia_key_index = 0
 
 # Initialize Groq Clients
 client_1 = None
@@ -127,72 +141,99 @@ global_history_col = db["global_history"]
 global_memory_col = db["global_memory"]
 
 def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roast", max_retries=4):
-    """
-    Dual-Brain Architecture. 
-    - Routes Roasts to Key 1 (Kimi), Backgrounds to Key 2 (Llama/GPT).
-    - Maintains separate persistent round-robin loops for both.
-    """
-    global active_roast_index, active_bg_index
+    global active_roast_index, active_bg_index, active_nvidia_key_index
     
     is_roast = (task_type == "roast")
-    
-    # Route to the correct client, list, and thread lock based on task
-    active_client = client_1 if is_roast else client_2
     active_list = config.ROAST_MODELS if is_roast else config.BACKGROUND_MODELS
     active_lock = roast_model_lock if is_roast else bg_model_lock
 
-    if not active_client:
-        logger.error(f"Cannot query brain: Client not initialized.")
-        return None 
-    
-    base_delay = 1.0 # Used for server overload pauses
+    base_delay = 1.0 
 
     for attempt in range(max_retries):
-        # Fetch the currently active model from the correct pool
         current_index = active_roast_index if is_roast else active_bg_index
         current_model = active_list[current_index]
+        current_nv_key_index = None # Track which Nvidia key we use in this loop
         
         try:
-            response = active_client.chat.completions.create(
-                model=current_model,
-                messages=llm_feed,
-                temperature=temperature,
-                max_completion_tokens=max_output_tokens,
-                top_p=1
-            )
-            return response.choices[0].message.content.strip()
+            # --- NVIDIA NIM ROUTING (For Kimi) ---
+            if is_roast and "kimi" in current_model.lower() and config.NVIDIA_KEYS:
+                current_nv_key_index = active_nvidia_key_index
+                current_key = config.NVIDIA_KEYS[current_nv_key_index]
+                
+                invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {current_key}",
+                    "Accept": "application/json"
+                }
+                payload = {
+                    "model": current_model,
+                    "messages": llm_feed,
+                    "max_tokens": max_output_tokens,
+                    "temperature": temperature,
+                    "top_p": 1.00,
+                    "stream": False,
+                    "chat_template_kwargs": {"thinking": True} 
+                }
+                
+                response = requests.post(invoke_url, headers=headers, json=payload, timeout=90)
+                response.raise_for_status() 
+                
+                data = response.json()
+                return data["choices"][0]["message"]["content"].strip()
+                
+            # --- GROQ ROUTING (For Background & Fallbacks) ---
+            else:
+                active_client = client_1 if is_roast else client_2
+                if not active_client:
+                    logger.error("Cannot query brain: Groq Client not initialized.")
+                    return None 
+
+                response = active_client.chat.completions.create(
+                    model=current_model,
+                    messages=llm_feed,
+                    temperature=temperature,
+                    max_completion_tokens=max_output_tokens,
+                    top_p=1
+                )
+                return response.choices[0].message.content.strip()
             
         except Exception as e:
             error_msg = str(e).lower()
             if attempt == max_retries - 1:
-                logger.error(f"GROQ FATAL ERROR (After {max_retries} attempts): {e}")
+                logger.error(f"FATAL API ERROR (After {max_retries} attempts): {e}")
                 return None
             
-            # PATH A: Token Exhaustion (Rotate the specific pool)
-            if "429" in error_msg or "rate limit" in error_msg or "token" in error_msg:
-                with active_lock:
-                    check_index = active_roast_index if is_roast else active_bg_index
-                    if active_list[check_index] == current_model:
-                        
-                        new_index = (check_index + 1) % len(active_list)
-                        if is_roast: active_roast_index = new_index
-                        else: active_bg_index = new_index
-                        
-                        logger.warning(f"[{task_type}] {current_model} exhausted. SWITCHING to {active_list[new_index]}.")
-                    else:
-                        logger.info(f"[{task_type}] Model already rotated by another thread.")
+            # PATH A: Token Exhaustion or Rate Limit
+            if "429" in error_msg or "rate limit" in error_msg or "token" in error_msg or "credit" in error_msg:
                 
+                # If Nvidia failed, rotate the Nvidia KEY
+                if current_nv_key_index is not None:
+                    with nvidia_key_lock:
+                        if active_nvidia_key_index == current_nv_key_index:
+                            active_nvidia_key_index = (active_nvidia_key_index + 1) % len(config.NVIDIA_KEYS)
+                            logger.warning(f"[{task_type}] Nvidia Key {current_nv_key_index + 1} exhausted. SWITCHING to Key {active_nvidia_key_index + 1}.")
+                
+                # If Groq failed, rotate the Groq MODEL
+                else:
+                    with active_lock:
+                        check_index = active_roast_index if is_roast else active_bg_index
+                        if active_list[check_index] == current_model:
+                            new_index = (check_index + 1) % len(active_list)
+                            if is_roast: active_roast_index = new_index
+                            else: active_bg_index = new_index
+                            logger.warning(f"[{task_type}] {current_model} exhausted. SWITCHING to {active_list[new_index]}.")
+                            
                 time.sleep(random.uniform(0.2, 0.5))
 
-            # PATH B: Server Overload (Pause without rotating)
+            # PATH B: Server Overload 
             elif "500" in error_msg or "502" in error_msg or "503" in error_msg or "504" in error_msg or "connection" in error_msg:
                 sleep_time = (base_delay * (2 ** attempt)) + random.uniform(0.1, 1.0)
-                logger.warning(f"[{task_type}] Groq Server Overload ({e}). Backing off for {sleep_time:.2f}s... (Attempt {attempt + 1}/{max_retries})")
+                logger.warning(f"[{task_type}] Server Overload ({e}). Backing off for {sleep_time:.2f}s...")
                 time.sleep(sleep_time)
 
-            # PATH C: Unknown Fatal Error (Abort)
+            # PATH C: Unknown Fatal Error
             else:
-                logger.error(f"Non-retriable GROQ ERROR: {e}")
+                logger.error(f"Non-retriable API ERROR: {e}")
                 return None
 
 app = Flask(__name__)
@@ -636,24 +677,19 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
         base_reply = ""
 
     # 6. Clean up hallucinations or prefix tags
-    # 1. SCRUB REASONING BLOCKS (The Think Tags)
-    # Removes completed <think>...</think> blocks
+    # Scrub the thinking scratchpad so Discord only sees the final insult
     base_reply = re.sub(r"<think>.*?</think>\s*", "", base_reply, flags=re.DOTALL | re.IGNORECASE)
-    # Removes unclosed <think> blocks just in case it hit a token limit mid-thought
     base_reply = re.sub(r"<think>.*", "", base_reply, flags=re.DOTALL | re.IGNORECASE)
 
-    # 2. Extract Reaction
+    # Classic reaction extraction
     reaction = None
     react_match = re.search(r"\[REACT:\s*(.*?)\s*\]", base_reply, flags=re.IGNORECASE)
     if react_match:
         reaction = react_match.group(1).strip()
         base_reply = re.sub(r"\[REACT:\s*.*?\s*\]", "", base_reply, flags=re.IGNORECASE)
 
-    # 3. Final Cleanup
-    temp_reply = re.sub(r"^(?:\[.*?\]|PSI-09)\s*:\s*", "", base_reply or "", flags=re.IGNORECASE)
-    temp_reply = re.sub(r"\n\[.*?\]:.*", "", temp_reply, flags=re.DOTALL) 
-    clean_reply = re.sub(r"\s{2,}", " ", temp_reply).strip()
-
+    clean_reply = base_reply.strip()
+    
     if not clean_reply:
         logger.info(f"Empty or failed response for {user_key}. Skipping storage.")
         return ""
