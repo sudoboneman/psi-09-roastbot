@@ -156,7 +156,7 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
         
         try:
             # --- NVIDIA NIM ROUTING (For Kimi) ---
-            if is_roast and "kimi" in current_model.lower() and config.NVIDIA_KEYS:
+            if is_roast and ("kimi" in current_model.lower() or "gemma" in current_model.lower()) and config.NVIDIA_KEYS:
                 current_nv_key_index = active_nvidia_key_index
                 current_key = config.NVIDIA_KEYS[current_nv_key_index]
                 
@@ -695,15 +695,12 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
     })
 
     # 5. Fire the Engine
-    logger.info(f"--- INITIATING COMBAT SEQUENCE FOR: {username} ---")
     try:
         base_reply = query_private_brain(llm_feed=llm_feed, temperature=0.75, max_output_tokens=1024, task_type="roast")
     except Exception as e:
-        logger.error(f"SILENCE REASON: Brain query threw a fatal exception: {e}")
         base_reply = ""
 
     if not base_reply:
-        logger.warning(f"SILENCE REASON: Nvidia returned an empty payload. (Likely a NeMo Guardrail safety block or credit exhaustion).")
         return ""
 
     # --- RAW OUTPUT X-RAY ---
@@ -718,7 +715,6 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
     clean_reply = clean_reply.strip()
     
     if not clean_reply:
-        logger.warning(f"SILENCE REASON: The Regex scrubber deleted the entire message. Kimi likely hit the 1024 token limit before closing its <think> tag.")
         return ""
 
     logger.info(f"FINAL PAYLOAD DELIVERED: {clean_reply}")
