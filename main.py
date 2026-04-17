@@ -704,14 +704,14 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
         return ""
 
     # --- RAW OUTPUT X-RAY ---
-    logger.info(f"RAW OUTPUT FROM NVIDIA:\n{'='*40}\n{base_reply}\n{'='*40}")
+    logger.info(f"RAW OUTPUT FROM NVIDIA: {base_reply}")
 
     # 6. Clean up hallucinations or prefix tags
+    clean_reply = re.sub(r"<think>.*?</think>\s*", "", base_reply, flags=re.DOTALL | re.IGNORECASE)
+    clean_reply = re.sub(r"<think>.*", "", clean_reply, flags=re.DOTALL | re.IGNORECASE)
     clean_reply = re.sub(r"<\|?think\|?>.*?</\|?think\|?>\s*", "", clean_reply, flags=re.DOTALL | re.IGNORECASE)
     clean_reply = re.sub(r"<\|?think\|?>.*", "", clean_reply, flags=re.DOTALL | re.IGNORECASE)
     clean_reply = re.sub(r"<\|channel>thought.*?</channel\|>\s*", "", clean_reply, flags=re.DOTALL | re.IGNORECASE)
-    clean_reply = re.sub(r"<think>.*?</think>\s*", "", base_reply, flags=re.DOTALL | re.IGNORECASE)
-    clean_reply = re.sub(r"<think>.*", "", clean_reply, flags=re.DOTALL | re.IGNORECASE)
     clean_reply = clean_reply.strip()
     
     if not clean_reply:
