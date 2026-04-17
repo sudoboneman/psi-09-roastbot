@@ -8,3 +8,4 @@ groq
 tiktoken
 transformers
 huggingface_hub
+requests
