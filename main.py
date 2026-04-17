@@ -64,7 +64,7 @@ class Config:
 
     # --- DUAL PERSISTENT MODEL CYCLES ---
     ROAST_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
-        "google/gemma-4-31b-it"
+        "moonshotai/kimi-k2.5"
     ])
     
     BACKGROUND_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
@@ -174,7 +174,7 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
                     "temperature": temperature,
                     "top_p": 1.00,
                     "stream": False,
-                    "chat_template_kwargs": {"enable_thinking": False} 
+                    "chat_template_kwargs": {"thinking":False} 
                 }
                 
                 logger.info(f"[ROAST] Firing request to Nvidia ({current_model})...")
