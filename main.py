@@ -673,7 +673,7 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
 
     # 5. Fire the Engine
     try:
-        base_reply = query_private_brain(llm_feed=llm_feed, temperature=0.9, max_output_tokens=1024, task_type="roast")
+        base_reply = query_private_brain(llm_feed=llm_feed, temperature=0.9, max_output_tokens=200, task_type="roast")
     except Exception as e:
         logger.error(f"AI Error: {e}")
         base_reply = ""
