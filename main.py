@@ -174,7 +174,7 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
                     "temperature": temperature,
                     "top_p": 1.00,
                     "stream": False,
-                    "chat_template_kwargs": {"enable_thinking": True} 
+                    "chat_template_kwargs": {"enable_thinking": False} 
                 }
                 
                 logger.info(f"[ROAST] Firing request to Nvidia ({current_model})...")
