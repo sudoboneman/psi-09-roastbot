@@ -175,11 +175,23 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
                     "chat_template_kwargs": {"thinking": True} 
                 }
                 
-                response = requests.post(invoke_url, headers=headers, json=payload, timeout=90)
-                response.raise_for_status() 
+                logger.info(f"[ROAST] Firing request to Nvidia ({current_model})...")
+                start_time = time.time()
+
+                # Make the raw HTTP request to Nvidia
+                response = requests.post(invoke_url, headers=headers, json=payload, timeout=180)
+                
+                # --- NEW: NVIDIA ERROR X-RAY ---
+                if response.status_code != 200:
+                    logger.error(f"NVIDIA API REJECTED REQUEST. Status: {response.status_code}")
+                    logger.error(f"NVIDIA RAW ERROR BODY: {response.text}")
+                
+                response.raise_for_status() # Trigger except block on 4xx/5xx errors
                 
                 data = response.json()
                 content = data["choices"][0]["message"].get("content") or ""
+                    
+                logger.info(f"[ROAST] Nvidia responded in {time.time() - start_time:.2f} seconds.")
                 return content.strip()
                 
             # --- GROQ ROUTING (For Background & Fallbacks) ---
@@ -672,27 +684,30 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
     })
 
     # 5. Fire the Engine
+    logger.info(f"--- INITIATING COMBAT SEQUENCE FOR: {username} ---")
     try:
-        base_reply = query_private_brain(llm_feed=llm_feed, temperature=0.9, max_output_tokens=2048, task_type="roast")
+        base_reply = query_private_brain(llm_feed=llm_feed, temperature=0.75, max_output_tokens=1024, task_type="roast")
     except Exception as e:
-        logger.error(f"AI Error: {e}")
+        logger.error(f"SILENCE REASON: Brain query threw a fatal exception: {e}")
         base_reply = ""
 
     if not base_reply:
-        logger.info(f"Empty response from model (Safety refusal or API failure) for {user_key}. Skipping.")
+        logger.warning(f"SILENCE REASON: Nvidia returned an empty payload. (Likely a NeMo Guardrail safety block or credit exhaustion).")
         return ""
+
+    # --- RAW OUTPUT X-RAY ---
+    logger.info(f"RAW OUTPUT FROM NVIDIA:\n{'='*40}\n{base_reply}\n{'='*40}")
 
     # 6. Clean up hallucinations or prefix tags
-    # Scrub the thinking scratchpad so Discord only sees the final insult
-    base_reply = re.sub(r"<think>.*?</think>\s*", "", base_reply, flags=re.DOTALL | re.IGNORECASE)
-    base_reply = re.sub(r"<think>.*", "", base_reply, flags=re.DOTALL | re.IGNORECASE)
-
-    clean_reply = base_reply.strip()
+    clean_reply = re.sub(r"<think>.*?</think>\s*", "", base_reply, flags=re.DOTALL | re.IGNORECASE)
+    clean_reply = re.sub(r"<think>.*", "", clean_reply, flags=re.DOTALL | re.IGNORECASE)
+    clean_reply = clean_reply.strip()
     
     if not clean_reply:
-        logger.info(f"Empty or failed response for {user_key}. Skipping storage.")
+        logger.warning(f"SILENCE REASON: The Regex scrubber deleted the entire message. Kimi likely hit the 1024 token limit before closing its <think> tag.")
         return ""
 
+    logger.info(f"FINAL PAYLOAD DELIVERED: {clean_reply}")
     return clean_reply
 
 # --- API ROUTES ---
