@@ -64,7 +64,7 @@ class Config:
 
     # --- DUAL PERSISTENT MODEL CYCLES ---
     ROAST_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
-        "moonshotai/kimi-k2.5"
+        "moonshotai/kimi-k2-instruct-0905"
     ])
     
     BACKGROUND_MODELS: list = __import__("dataclasses").field(default_factory=lambda: [
@@ -173,8 +173,8 @@ def query_private_brain(llm_feed, temperature, max_output_tokens, task_type="roa
                     "max_tokens": max_output_tokens,
                     "temperature": temperature,
                     "top_p": 1.00,
-                    "stream": False,
-                    "chat_template_kwargs": {"thinking":False} 
+                    #"chat_template_kwargs": {"thinking":False},
+                    "stream": False
                 }
                 
                 logger.info(f"[ROAST] Firing request to Nvidia ({current_model})...")
@@ -696,7 +696,7 @@ def get_roast_response(group_name, username, active_message, tagged_users=None):
 
     # 5. Fire the Engine
     try:
-        base_reply = query_private_brain(llm_feed=llm_feed, temperature=0.75, max_output_tokens=1024, task_type="roast")
+        base_reply = query_private_brain(llm_feed=llm_feed, temperature=0.95, max_output_tokens=1024, task_type="roast")
     except Exception as e:
         base_reply = ""
 
