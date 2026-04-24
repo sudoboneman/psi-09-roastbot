@@ -83,7 +83,7 @@ class Config:
     GROUP_HISTORY_SLICE: int = 80 # Fast database read
     
     # LLM PAYLOAD CEILINGS (Shrunk to maximize API calls/min)
-    MAX_HISTORY_MESSAGES: int = 16 # Down from 30
+    MAX_HISTORY_MESSAGES: int = 30 # Down from 30
     MAX_HISTORY_TOKENS: int = 400 # Tightly caps the user's personal history
     GROUP_HISTORY_TOKEN_LIMIT: int = 2000 # Tightly caps the group's history
     
