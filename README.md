@@ -367,7 +367,7 @@ All bridges (Discord, WhatsApp, Minecraft) send identical payload:
 - [psi-09-whatsapp](https://github.com/sudoboneman/psi-09-whatsapp) — WhatsApp bridge
 - [psi-09-mc](https://github.com/sudoboneman/psi-09-mc) — Minecraft 6b6t bot
 - [psi-09-mc-gapples](https://github.com/sudoboneman/psi-09-mc-gapples) — Minecraft gapples bot
-- [psi-09-pseudo-user-discord](https://github.com/sudoboneman/psi-09-pseudo-user-discord) — Self-bot bridge
+- [psi-09-pseudo-user-discord](https://github.com/sudoboneman/psi-09-psuedo-user-discord) — Self-bot bridge
 - [psi-09-local](https://github.com/sudoboneman/psi-09-local) — WhatsApp session extractor
 
 ---
