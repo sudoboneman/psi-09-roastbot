@@ -375,5 +375,3 @@ All bridges (Discord, WhatsApp, Minecraft) send identical payload:
 **Status:** Active, private development  
 **Origin:** 2025  
 **Author:** sudoboneman
-
-Copyright © 2024–2026. All rights reserved.
