@@ -372,6 +372,36 @@ All bridges (Discord, WhatsApp, Minecraft) send identical payload:
 
 ---
 
+## Deployment
+
+### Option A: Hugging Face Spaces
+
+1. Create a Hugging Face Space with Docker/Python 3.10
+2. Set `HF_TOKEN` as a Space secret — Spaces auto-pulls the `HF_TOKEN` secret
+3. Set the following environment variables in the Space:
+   - `MONGO_URI`
+   - `GROQ_API_KEY_1`, `GROQ_API_KEY_2`
+   - `NVIDIA_API_KEY_1`, `NVIDIA_API_KEY_2`
+   - `DISCORD_ID`, `DISCORD_ID_2`
+4. Deploy from the `main` branch
+
+### Option B: Docker
+
+```bash
+docker build -t psi-09-roastbot .
+docker run -e MONGO_URI=... -e GROQ_API_KEY_1=... -e NVIDIA_API_KEY_1=... -p 7860:7860 psi-09-roastbot
+```
+
+### Option C: Bare Metal
+
+```bash
+pip install -r requirements.txt
+# Set all env vars (MONGO_URI, GROQ_API_KEY_*, NVIDIA_API_KEY_*, DISCORD_ID, DISCORD_ID_2)
+python main.py  # runs on port 7860
+```
+
+---
+
 **Status:** Active, private development  
 **Origin:** 2025  
 **Author:** sudoboneman
